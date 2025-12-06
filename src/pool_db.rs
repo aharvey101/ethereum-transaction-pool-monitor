@@ -158,6 +158,54 @@ impl PoolDatabase {
         conn.execute("DELETE FROM pools", [])?;
         Ok(())
     }
+
+    /// Seed database with known DEX router addresses for testing
+    pub fn seed_known_dexes(&self, chain_id: u32) -> Result<u32> {
+        let known_dexes = vec![
+            // Uniswap V3
+            ("0x1F98431c8aD98523631AE4a59f267346ea3113F", "Uniswap V3 Router"),
+            ("0xE592427A0AEce92De3Edee1F18E0157C05861564", "Uniswap V3 SwapRouter"),
+            ("0x68b3465833fb72B5A828cCEDA3187CF6cc380C86", "Uniswap V3 SwapRouter02"),
+            
+            // Uniswap V2
+            ("0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D", "Uniswap V2 Router"),
+            ("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f", "Uniswap V2 Factory"),
+            
+            // Curve Finance
+            ("0x99a58482BD7490Cf8E3bfcA92e2A6b5F7e36c009", "Curve StableSwap"),
+            ("0xDC24316b9AE028E5614BFa16D19dC5c08421f535", "Curve StableSwap2"),
+            
+            // SushiSwap
+            ("0xd9e1cE17f2641f24aE9f7FFe6ff87D78ef7B26C1", "SushiSwap Router"),
+            ("0xC0AEe478e3B480f1DFF3EA3199A02A6aA7Fa05eA", "SushiSwap Factory"),
+            
+            // Balancer
+            ("0xBA12222222228d8Ba445958a75a0704d566BF2C8", "Balancer Vault"),
+            
+            // 0x Protocol
+            ("0xDef1C0ded9bef7B1AcB7b8f6Ce78ffe3D5B11BAa", "0x Protocol"),
+            
+            // 1inch
+            ("0x1111111254fb6c44bac0bed2854e76f90643097d", "1inch Router"),
+        ];
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut count = 0;
+
+        for (address, protocol) in known_dexes {
+            match tx.execute(
+                "INSERT OR IGNORE INTO pools (address, protocol, chain_id) VALUES (?1, ?2, ?3)",
+                params![address.to_lowercase(), protocol, chain_id],
+            ) {
+                Ok(rows) if rows > 0 => count += 1,
+                _ => {}
+            }
+        }
+
+        tx.commit()?;
+        Ok(count)
+    }
 }
 
 #[cfg(test)]

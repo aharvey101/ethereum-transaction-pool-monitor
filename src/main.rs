@@ -4,6 +4,7 @@ mod ui;
 mod dex;
 mod pool_db;
 mod coingecko;
+mod pool_fetcher;
 
 use app::AppState;
 use crossterm::{
@@ -101,9 +102,10 @@ async fn run_tui() {
         }
     };
 
-    // Initial sync of DEX pools (will run in background)
+    // Initial sync of DEX pools from node
     let app_ref = &mut app;
-    let _ = app_ref.sync_dex_pools().await;
+    tracing::info!("Syncing DEX pools from Ethereum node");
+    let _ = app_ref.sync_pools_from_node().await;
 
     // Run the main loop
     let _ = run_app(&mut terminal, &mut app).await;
@@ -219,12 +221,12 @@ async fn run_headless() {
         }
     };
 
-    // Sync DEX pools
-    tracing::info!("Syncing DEX pools from CoinGecko");
-    if let Err(e) = app.sync_dex_pools().await {
-        tracing::error!("Failed to sync DEX pools: {}", e);
+    // Sync DEX pools from Ethereum node
+    tracing::info!("Syncing DEX pools from Ethereum node");
+    if let Err(e) = app.sync_pools_from_node().await {
+        tracing::error!("Failed to sync DEX pools from node: {}", e);
     } else {
-        tracing::info!("DEX pools synced. Count: {}", app.pool_count);
+        tracing::info!("DEX pools synced from node. Count: {}", app.pool_count);
     }
 
     // Run update loop
