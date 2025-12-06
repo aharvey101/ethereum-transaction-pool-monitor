@@ -19,14 +19,15 @@ impl PoolFetcher {
     }
 
     /// Fetch UniswapV3 pools from node by querying PoolCreated events
-    /// Fetches pools from the last RECENT_BLOCK_WINDOW blocks for fast startup
+    /// Scans ALL blocks from V3 deployment (block 12,369,739) to current block
+    /// Uses 100k block windows for efficiency
     /// UniswapV3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea313100
     pub async fn fetch_uniswap_v3_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
         const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea313100";
-        const BLOCK_WINDOW: u64 = 5000;
-        const MAX_WINDOWS: u64 = 40;
+        const UNISWAP_V3_DEPLOYMENT_BLOCK: u64 = 12_369_739; // V3 deployed on May 5, 2021
+        const BLOCK_WINDOW: u64 = 100_000; // Query in 100k block windows for efficiency
 
-        tracing::info!("Fetching UniswapV3 pools from node");
+        tracing::info!("Fetching UniswapV3 pools from node (scanning all blocks from deployment)");
 
         // Create provider
         let provider = ProviderBuilder::new()
@@ -35,36 +36,37 @@ impl PoolFetcher {
         // Get current block
         let current_block = provider.get_block_number().await?;
         tracing::info!("Current block: {}", current_block);
+        tracing::info!("Scanning from V3 deployment block {} to current block {} ({} blocks)", 
+                      UNISWAP_V3_DEPLOYMENT_BLOCK, current_block, current_block - UNISWAP_V3_DEPLOYMENT_BLOCK);
+
+        let total_blocks = current_block - UNISWAP_V3_DEPLOYMENT_BLOCK;
+        let total_windows = (total_blocks + BLOCK_WINDOW - 1) / BLOCK_WINDOW;
 
         let mut all_pools = Vec::new();
 
-        // Query from current block backwards
+        // Query from V3 deployment block to current block in windows
         let mut to_block = current_block;
-        for window_idx in 0..MAX_WINDOWS {
+        let mut window_idx = 0;
+        while to_block >= UNISWAP_V3_DEPLOYMENT_BLOCK {
             let from_block = if to_block > BLOCK_WINDOW {
                 to_block - BLOCK_WINDOW
             } else {
-                break;
+                UNISWAP_V3_DEPLOYMENT_BLOCK
             };
 
-            tracing::debug!("Fetching UniswapV3 window {} (blocks {}-{})", window_idx, from_block, to_block);
+            let progress_pct = ((window_idx as f32 / total_windows as f32) * 100.0) as u32;
+            tracing::info!("Fetching UniswapV3 window {}/{} ({}%) - blocks {}-{}", window_idx, total_windows, progress_pct, from_block, to_block);
 
             let factory_addr = Address::from_str(UNISWAP_V3_FACTORY)?;
-            tracing::debug!("Factory address parsed: {:?}", factory_addr);
             
-            tracing::debug!("Creating V3 filter with event signature: 'PoolCreated(address,address,uint24,int24,address)'");
             let event_filter = Filter::new()
                 .from_block(from_block)
                 .to_block(to_block)
                 .address(vec![factory_addr])
                 .event("PoolCreated(address,address,uint24,int24,address)");
 
-            tracing::debug!("V3 filter created successfully");
-            tracing::debug!("Calling provider.get_logs()...");
-
             match provider.get_logs(&event_filter).await {
                 Ok(logs) => {
-                    tracing::debug!("V3 get_logs succeeded: {} logs found", logs.len());
                     if !logs.is_empty() {
                         tracing::debug!("Found {} PoolCreated events in window {}", logs.len(), window_idx);
 
@@ -78,14 +80,16 @@ impl PoolFetcher {
                 }
                 Err(e) => {
                     tracing::warn!("Error querying V3 logs in window {}: {}", window_idx, e);
-                    // Log the error with more details
-                    tracing::warn!("Error details: {:?}", e);
                     // Don't return immediately - continue with next window
                     // The error might be from unconfirmed blocks or other temporary issues
                 }
             }
 
-            to_block = from_block;
+            if from_block <= UNISWAP_V3_DEPLOYMENT_BLOCK {
+                break;
+            }
+            to_block = from_block - 1;
+            window_idx += 1;
         }
 
         if !all_pools.is_empty() {
@@ -97,14 +101,17 @@ impl PoolFetcher {
         Ok(all_pools.len() as u32)
     }
 
+
     /// Fetch UniswapV2 pools from node using rolling window approach
+    /// Scans ALL blocks from V2 deployment (block 10,000,835) to current block
+    /// Uses 100k block windows for efficiency
     /// UniswapV2 Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f
     pub async fn fetch_uniswap_v2_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
         const UNISWAP_V2_FACTORY: &str = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f";
-        const BLOCK_WINDOW: u64 = 5000;
-        const MAX_WINDOWS: u64 = 40;
+        const UNISWAP_V2_DEPLOYMENT_BLOCK: u64 = 10_000_835; // V2 deployed on May 5, 2020
+        const BLOCK_WINDOW: u64 = 100_000; // Query in 100k block windows for efficiency
 
-        tracing::info!("Fetching UniswapV2 pools from node");
+        tracing::info!("Fetching UniswapV2 pools from node (scanning all blocks from deployment)");
 
         // Create provider
         let provider = ProviderBuilder::new()
@@ -113,19 +120,26 @@ impl PoolFetcher {
         // Get current block
         let current_block = provider.get_block_number().await?;
         tracing::info!("Current block: {}", current_block);
+        tracing::info!("Scanning from V2 deployment block {} to current block {} ({} blocks)", 
+                      UNISWAP_V2_DEPLOYMENT_BLOCK, current_block, current_block - UNISWAP_V2_DEPLOYMENT_BLOCK);
+
+        let total_blocks = current_block - UNISWAP_V2_DEPLOYMENT_BLOCK;
+        let total_windows = (total_blocks + BLOCK_WINDOW - 1) / BLOCK_WINDOW;
 
         let mut all_pools = Vec::new();
 
-        // Query from current block backwards
+        // Query from V2 deployment block to current block in windows
         let mut to_block = current_block;
-        for window_idx in 0..MAX_WINDOWS {
+        let mut window_idx = 0;
+        while to_block >= UNISWAP_V2_DEPLOYMENT_BLOCK {
             let from_block = if to_block > BLOCK_WINDOW {
                 to_block - BLOCK_WINDOW
             } else {
-                break;
+                UNISWAP_V2_DEPLOYMENT_BLOCK
             };
 
-            tracing::debug!("Fetching UniswapV2 window {} (blocks {}-{})", window_idx, from_block, to_block);
+            let progress_pct = ((window_idx as f32 / total_windows as f32) * 100.0) as u32;
+            tracing::info!("Fetching UniswapV2 window {}/{} ({}%) - blocks {}-{}", window_idx, total_windows, progress_pct, from_block, to_block);
 
             let factory_addr = Address::from_str(UNISWAP_V2_FACTORY)?;
             let event_filter = Filter::new()
@@ -152,7 +166,11 @@ impl PoolFetcher {
                 }
             }
 
-            to_block = from_block;
+            if from_block <= UNISWAP_V2_DEPLOYMENT_BLOCK {
+                break;
+            }
+            to_block = from_block - 1;
+            window_idx += 1;
         }
 
         if !all_pools.is_empty() {
@@ -160,6 +178,7 @@ impl PoolFetcher {
             pool_db.add_pools(&all_pools)?;
         }
 
+        tracing::info!("UniswapV2 pool fetch complete: {} pools found", all_pools.len());
         Ok(all_pools.len() as u32)
     }
 }

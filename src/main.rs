@@ -102,10 +102,10 @@ async fn run_tui() {
         }
     };
 
-    // Initial sync of DEX pools from node
-    let app_ref = &mut app;
-    tracing::info!("Syncing DEX pools from Ethereum node");
-    let _ = app_ref.sync_pools_from_node().await;
+    // Start pool sync in background (will display progress in TUI)
+    tracing::info!("Starting DEX pool sync in background");
+    app.is_loading_pools = true;
+    app.pools_loading_progress = "Initializing pool scan...".to_string();
 
     // Run the main loop
     let _ = run_app(&mut terminal, &mut app).await;
@@ -128,6 +128,7 @@ async fn run_app(
     let _ = app.update_transactions().await;
 
     let mut last_update = std::time::Instant::now();
+    let mut pool_loading_started = false;
     const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
 
     loop {
@@ -189,7 +190,16 @@ async fn run_app(
         } else {
             // Timeout expired, time for periodic update
             last_update = std::time::Instant::now();
-            let _ = app.update_transactions().await;
+            
+            // First, load pools if not started yet
+            if !pool_loading_started {
+                pool_loading_started = true;
+                tracing::info!("Starting pool sync in background");
+                let _ = app.sync_pools_from_node().await;
+            } else {
+                // Then, update transactions regularly
+                let _ = app.update_transactions().await;
+            }
         }
     }
 
