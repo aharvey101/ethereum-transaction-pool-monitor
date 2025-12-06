@@ -112,7 +112,7 @@ impl AppState {
              coingecko_client,
              pool_fetcher,
              chain_id,
-             status: "Initializing...".to_string(),
+             status: "Starting transaction monitor...".to_string(),
              is_running: true,
              last_update: "Never".to_string(),
              last_pool_sync: "Never".to_string(),
@@ -194,17 +194,24 @@ impl AppState {
 
     /// Sync DEX pools directly from Ethereum node
     pub async fn sync_pools_from_node(&mut self) -> Result<()> {
-        // Check if we have sufficient pools already
+        // Check if we should force a complete pool refresh
+        let force_refresh = std::env::var("FORCE_POOL_REFRESH").is_ok();
         let existing_pool_count = self.pool_db.pool_count().unwrap_or(0);
-        if existing_pool_count >= 1000 {
+        
+        if !force_refresh && existing_pool_count >= 1000 {
             tracing::info!("Sufficient pools already in database ({}), skipping pool sync", existing_pool_count);
+            tracing::info!("Use FORCE_POOL_REFRESH=1 to force a complete refresh");
             self.pool_count = existing_pool_count;
             self.is_loading_pools = false;
             self.pools_loading_progress = format!("Using existing {} pools from database", existing_pool_count);
             return Ok(());
         }
         
-        tracing::info!("Pool count low ({}), syncing pools from Ethereum node", existing_pool_count);
+        if force_refresh {
+            tracing::info!("FORCE_POOL_REFRESH enabled - starting complete pool scan (existing: {})", existing_pool_count);
+        } else {
+            tracing::info!("Pool count low ({}), syncing pools from Ethereum node", existing_pool_count);
+        }
         
         // Clear existing pools only if we're doing a full reload
         self.pool_db.clear_pools()?;

@@ -50,15 +50,22 @@ impl BackgroundPoolLoader {
         let pool_db = PoolDatabase::new(db_path)?;
         let pool_fetcher = PoolFetcher::new(rpc_url);
 
-        // Check if we have sufficient pools already
+        // Check if we should force a complete pool refresh
+        let force_refresh = std::env::var("FORCE_POOL_REFRESH").is_ok();
         let existing_pool_count = pool_db.pool_count().unwrap_or(0);
-        if existing_pool_count >= 1000 {
+        
+        if !force_refresh && existing_pool_count >= 1000 {
             tracing::info!("Sufficient pools already in database ({}), skipping pool loading", existing_pool_count);
+            tracing::info!("Use FORCE_POOL_REFRESH=1 to force a complete refresh");
             let _ = tx.send(PoolLoaderMessage::Complete(0, 0, existing_pool_count));
             return Ok(());
         }
         
-        tracing::info!("Pool count low ({}), starting comprehensive pool scan", existing_pool_count);
+        if force_refresh {
+            tracing::info!("FORCE_POOL_REFRESH enabled - starting complete pool scan (existing: {})", existing_pool_count);
+        } else {
+            tracing::info!("Pool count low ({}), starting comprehensive pool scan", existing_pool_count);
+        }
 
         // Clear existing pools only if we're doing a full reload
         pool_db.clear_pools()?;

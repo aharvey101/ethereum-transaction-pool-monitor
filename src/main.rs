@@ -111,7 +111,16 @@ async fn run_tui() {
     // Pool loading is very slow and blocks the TUI
     tracing::info!("Application started with {} pools in database", app.pool_count);
 
-    // Spawn background pool loader
+    // Spawn background transaction updater FIRST (before pool loading)
+    tracing::info!("Spawning background transaction updater task");
+    let (_tx_updater, tx_updater_rx) = BackgroundTransactionUpdater::spawn(
+        rpc_url.clone(),
+        db_path.to_string(),
+        chain_id,
+    );
+    tracing::info!("Background transaction updater spawned successfully");
+
+    // Spawn background pool loader (runs independently) 
     tracing::info!("Spawning background pool loader task");
     let (_loader, pool_loader_rx) = BackgroundPoolLoader::spawn(
         rpc_url.clone(),
@@ -121,15 +130,10 @@ async fn run_tui() {
     app.is_loading_pools = true;
     app.pools_loading_progress = "Pool scan starting...".to_string();
 
-    // Spawn background transaction updater
-    tracing::info!("Spawning background transaction updater task");
-    let (_tx_updater, tx_updater_rx) = BackgroundTransactionUpdater::spawn(
-        rpc_url.clone(),
-        db_path.to_string(),
-        chain_id,
-    );
-    tracing::info!("Background transaction updater spawned successfully");
-
+    // Update status to show transaction monitoring is starting
+    app.status = "Transaction monitoring starting...".to_string();
+    app.needs_redraw = true;
+    
     // Run the main loop
     let _ = run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx).await;
 
@@ -329,9 +333,31 @@ async fn run_headless() {
         }
     };
 
-    // Skip pool loading in headless mode for now - focus on transaction monitoring
-    tracing::info!("Skipping pool loading in headless mode - focusing on transaction monitoring");
-    tracing::info!("Pool count in database: {}", app.pool_count);
+    // Pool loading - check if we need a comprehensive scan
+    let force_refresh = std::env::var("FORCE_POOL_REFRESH").is_ok();
+    let existing_pool_count = app.pool_count;
+    
+    if force_refresh {
+        tracing::info!("FORCE_POOL_REFRESH enabled - running comprehensive pool scan");
+        tracing::info!("Starting complete blockchain scan for all DEX pools (existing: {})", existing_pool_count);
+        tracing::info!("This will scan ~25.5 million blocks and take approximately 15 minutes");
+        
+        if let Err(e) = app.sync_pools_from_node().await {
+            tracing::error!("Failed to sync DEX pools from node: {}", e);
+        } else {
+            tracing::info!("✅ Complete pool scan finished! Total pools: {}", app.pool_count);
+        }
+    } else if existing_pool_count < 1000 {
+        tracing::info!("Pool count low ({}), syncing DEX pools from Ethereum node", existing_pool_count);
+        if let Err(e) = app.sync_pools_from_node().await {
+            tracing::error!("Failed to sync DEX pools from node: {}", e);
+        } else {
+            tracing::info!("DEX pools synced from node. Count: {}", app.pool_count);
+        }
+    } else {
+        tracing::info!("Sufficient pools already in database ({})", existing_pool_count);
+        tracing::info!("Use FORCE_POOL_REFRESH=1 to force a complete refresh");
+    }
 
     // Run update loop
     let mut update_count = 0;
