@@ -28,6 +28,9 @@ pub struct AppState {
     pub is_loading_pools: bool,
     pub pools_loading_progress: String,
     pub pools_found_count: u32,
+    pub v2_pools_found: u32,
+    pub v3_pools_found: u32,
+    pub pool_loading_progress_percent: u32,
 }
 
 impl AppState {
@@ -58,6 +61,9 @@ impl AppState {
             is_loading_pools: false,
             pools_loading_progress: String::new(),
             pools_found_count: 0,
+            v2_pools_found: 0,
+            v3_pools_found: 0,
+            pool_loading_progress_percent: 0,
         })
     }
 

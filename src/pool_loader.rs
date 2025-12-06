@@ -7,10 +7,10 @@ use std::path::Path;
 /// Messages sent from the background pool loader to the main app
 #[derive(Clone, Debug)]
 pub enum PoolLoaderMessage {
-    /// Progress update with (message, pools_found_so_far)
-    Progress(String, u32),
-    /// Pool loading completed with total pools found
-    Complete(u32),
+    /// Progress update with (message, v2_pools, v3_pools, progress_percent)
+    Progress(String, u32, u32, u32),
+    /// Pool loading completed with (v2_count, v3_count, total_count)
+    Complete(u32, u32, u32),
     /// Pool loading failed with error message
     Error(String),
 }
@@ -54,11 +54,14 @@ impl BackgroundPoolLoader {
         // Clear existing pools
         pool_db.clear_pools()?;
 
-        let mut total = 0;
+        let mut v2_count = 0;
+        let mut v3_count = 0;
 
         // Send initial progress
         let _ = tx.send(PoolLoaderMessage::Progress(
             "UniswapV2: Initializing...".to_string(),
+            0,
+            0,
             0,
         ));
 
@@ -67,10 +70,12 @@ impl BackgroundPoolLoader {
         match pool_fetcher.fetch_uniswap_v2_pools(&pool_db, chain_id).await {
             Ok(count) => {
                 tracing::info!("Background loader: Found {} V2 pools", count);
-                total += count;
+                v2_count = count;
                 let _ = tx.send(PoolLoaderMessage::Progress(
                     format!("UniswapV2: Complete! {} pools found", count),
-                    total,
+                    v2_count,
+                    v3_count,
+                    33, // Arbitrary progress point for V2 completion
                 ));
             }
             Err(e) => {
@@ -86,7 +91,9 @@ impl BackgroundPoolLoader {
         // Send V3 progress
         let _ = tx.send(PoolLoaderMessage::Progress(
             "UniswapV3: Initializing...".to_string(),
-            total,
+            v2_count,
+            v3_count,
+            33,
         ));
 
         // Fetch V3 pools
@@ -94,10 +101,12 @@ impl BackgroundPoolLoader {
         match pool_fetcher.fetch_uniswap_v3_pools(&pool_db, chain_id).await {
             Ok(count) => {
                 tracing::info!("Background loader: Found {} V3 pools", count);
-                total += count;
+                v3_count = count;
                 let _ = tx.send(PoolLoaderMessage::Progress(
                     format!("UniswapV3: Complete! {} pools found", count),
-                    total,
+                    v2_count,
+                    v3_count,
+                    66, // Arbitrary progress point for V3 completion
                 ));
             }
             Err(e) => {
@@ -111,11 +120,14 @@ impl BackgroundPoolLoader {
         }
 
         // Seed known DEX addresses if we don't have enough pools
+        let mut total = v2_count + v3_count;
         if total < 100 {
             tracing::info!("Background loader: Seeding with known DEX addresses");
             let _ = tx.send(PoolLoaderMessage::Progress(
                 "Seeding with known DEX addresses...".to_string(),
-                total,
+                v2_count,
+                v3_count,
+                80,
             ));
 
             match pool_db.seed_known_dexes(chain_id) {
@@ -133,7 +145,7 @@ impl BackgroundPoolLoader {
         match pool_db.pool_count() {
             Ok(final_count) => {
                 tracing::info!("Background loader: Complete! {} total pools", final_count);
-                let _ = tx.send(PoolLoaderMessage::Complete(final_count));
+                let _ = tx.send(PoolLoaderMessage::Complete(v2_count, v3_count, final_count));
             }
             Err(e) => {
                 tracing::error!("Background loader: Failed to get pool count: {}", e);

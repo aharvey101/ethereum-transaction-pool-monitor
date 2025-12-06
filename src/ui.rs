@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Table, Row},
+    widgets::{Block, Borders, Table, Row, Gauge},
     Frame,
 };
 
@@ -145,40 +145,76 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Center the loading text
-    let padding_top = (inner.height as usize).saturating_sub(4) / 2;
-    let centered_area = Rect {
-        x: inner.x,
-        y: inner.y + padding_top as u16,
-        width: inner.width,
-        height: 4,
-    };
+    // Split inner area into sections
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(1),  // Title/status
+            Constraint::Length(1),  // Pool counts
+            Constraint::Length(1),  // Empty
+            Constraint::Length(3),  // Progress bar
+            Constraint::Min(0),     // Rest
+        ])
+        .split(inner);
 
-    let loading_text = ratatui::widgets::Paragraph::new(
-        vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled(
-                    "⏳ ",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-                ),
-                Span::styled(
-                    &app.pools_loading_progress,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled(
-                    format!("  {} pools found", app.pools_found_count),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                ),
-            ]),
-            Line::from(""),
-        ]
-    )
-    .alignment(Alignment::Center);
+    // Progress message
+    let status_line = Line::from(vec![
+        Span::styled(
+            "⏳ ",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(
+            &app.pools_loading_progress,
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        ),
+    ]);
+    
+    let status_widget = ratatui::widgets::Paragraph::new(status_line)
+        .alignment(Alignment::Center);
+    f.render_widget(status_widget, chunks[0]);
 
-    f.render_widget(loading_text, centered_area);
+    // Pool counts
+    let pool_counts = Line::from(vec![
+        Span::styled(
+            "V2: ",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(
+            format!("{}", app.v2_pools_found),
+            Style::default().fg(Color::Green)
+        ),
+        Span::raw("  |  "),
+        Span::styled(
+            "V3: ",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(
+            format!("{}", app.v3_pools_found),
+            Style::default().fg(Color::Green)
+        ),
+        Span::raw("  |  "),
+        Span::styled(
+            "Total: ",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(
+            format!("{}", app.pools_found_count),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        ),
+    ]);
+    
+    let counts_widget = ratatui::widgets::Paragraph::new(pool_counts)
+        .alignment(Alignment::Center);
+    f.render_widget(counts_widget, chunks[1]);
+
+    // Progress bar
+    let progress_bar = Gauge::default()
+        .block(Block::default().borders(Borders::ALL).title(" Progress "))
+        .gauge_style(Style::default().fg(Color::Cyan))
+        .percent(app.pool_loading_progress_percent as u16)
+        .label(format!("{}%", app.pool_loading_progress_percent));
+    f.render_widget(progress_bar, chunks[3]);
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
