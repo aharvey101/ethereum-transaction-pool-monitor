@@ -28,6 +28,9 @@ pub struct MempoolTransaction {
     // Cached formatted values for UI rendering
     pub value_eth: String,
     pub gas_price_gwei: String,
+    // Pre-computed numeric values for fast sorting (eliminates string parsing)
+    pub value_f64: f64,
+    pub gas_price_f64: f64,
     pub is_dex: bool,
 }
 
@@ -44,6 +47,10 @@ impl MempoolTransaction {
 
         let value_eth = format_value(&value_hex);
         let gas_price_gwei = format_gas_price(&gas_price_hex);
+        
+        // Pre-compute numeric values for fast sorting (eliminates repeated string parsing)
+        let value_f64 = value_eth.parse::<f64>().unwrap_or(0.0);
+        let gas_price_f64 = gas_price_gwei.parse::<f64>().unwrap_or(0.0);
         
         // Check if the "to" address is a known DEX pool from database
         let is_dex = to_opt.as_ref().map_or(false, |addr| {
@@ -68,6 +75,8 @@ impl MempoolTransaction {
             transaction_index: value["transactionIndex"].as_str().map(|s| s.to_string()),
             value_eth,
             gas_price_gwei,
+            value_f64,
+            gas_price_f64,
             is_dex,
         })
     }

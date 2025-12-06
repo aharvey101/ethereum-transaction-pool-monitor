@@ -2,6 +2,15 @@
 name = "ethereum-transaction-pool-monitor"
 version = "0.1.0"
 edition = "2021"
+default-run = "ethereum-transaction-pool-monitor"
+
+[[bin]]
+name = "ethereum-transaction-pool-monitor"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_pool_fetch"
+path = "src/bin/test_pool_fetch.rs"
 
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }

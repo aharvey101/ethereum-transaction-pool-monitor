@@ -31,6 +31,35 @@ impl FilterMode {
     }
 }
 
+/// Sort field for transactions
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SortField {
+    Default,
+    GasPrice,
+    Value,
+    Nonce,
+}
+
+impl SortField {
+    pub fn toggle(self) -> Self {
+        match self {
+            SortField::Default => SortField::GasPrice,
+            SortField::GasPrice => SortField::Value,
+            SortField::Value => SortField::Nonce,
+            SortField::Nonce => SortField::Default,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SortField::Default => "Default",
+            SortField::GasPrice => "Gas Price",
+            SortField::Value => "Value",
+            SortField::Nonce => "Nonce",
+        }
+    }
+}
+
 /// Application state containing transaction data and UI state
 pub struct AppState {
     pub transactions: VecDeque<MempoolTransaction>,
@@ -55,6 +84,14 @@ pub struct AppState {
     pub v3_pools_found: u32,
     pub pool_loading_progress_percent: u32,
     pub filter_mode: FilterMode,
+    pub sort_field: SortField,
+    pub cached_filtered_count_display: usize, // for UI display without needing mutable access
+    pub cached_title: String, // cached title string to avoid repeated format! calls
+    // Cache for filtered/sorted transactions to avoid recomputing on every frame
+    #[allow(dead_code)]
+    pub cached_filtered_sorted: Vec<usize>, // indices into transactions deque
+    cached_filtered_count: usize, // cached count to avoid O(n) on every scroll
+    cache_dirty: bool,
 }
 
 impl AppState {
@@ -66,31 +103,37 @@ impl AppState {
         let pool_fetcher = PoolFetcher::new(rpc_url);
         let pool_count = pool_db.pool_count().unwrap_or(0);
         
-        Ok(AppState {
-            transactions: VecDeque::new(),
-            selected_index: 0,
-            scroll_offset: 0,
-            client,
-            pool_db,
-            coingecko_client,
-            pool_fetcher,
-            chain_id,
-            status: "Initializing...".to_string(),
-            is_running: true,
-            last_update: "Never".to_string(),
-            last_pool_sync: "Never".to_string(),
-            pool_count,
-            connection_healthy: true,
-            needs_redraw: true,
-            is_loading_pools: false,
-            pools_loading_progress: String::new(),
-            pools_found_count: 0,
-            v2_pools_found: 0,
-            v3_pools_found: 0,
-            pool_loading_progress_percent: 0,
-            filter_mode: FilterMode::All,
-        })
-    }
+         Ok(AppState {
+             transactions: VecDeque::new(),
+             selected_index: 0,
+             scroll_offset: 0,
+             client,
+             pool_db,
+             coingecko_client,
+             pool_fetcher,
+             chain_id,
+             status: "Initializing...".to_string(),
+             is_running: true,
+             last_update: "Never".to_string(),
+             last_pool_sync: "Never".to_string(),
+             pool_count,
+             connection_healthy: true,
+             needs_redraw: true,
+             is_loading_pools: false,
+             pools_loading_progress: String::new(),
+             pools_found_count: 0,
+             v2_pools_found: 0,
+             v3_pools_found: 0,
+             pool_loading_progress_percent: 0,
+             filter_mode: FilterMode::All,
+             sort_field: SortField::Default,
+             cached_filtered_count_display: 0,
+             cached_title: " Pending Transactions (0) ".to_string(),
+             cached_filtered_sorted: Vec::new(),
+             cached_filtered_count: 0,
+             cache_dirty: true,
+         })
+     }
 
     /// Update transactions from the mempool
     pub async fn update_transactions(&mut self) -> Result<()> {
@@ -107,6 +150,8 @@ impl AppState {
                 self.status = format!("{} pending transactions found", self.transactions.len());
                 self.last_update = Local::now().format("%H:%M:%S").to_string();
                 self.connection_healthy = true;
+                self.cache_dirty = true; // Mark cache as dirty when transactions update
+                self.cached_title = format!(" Pending Transactions ({}) ", self.transactions.len()); // Update cached title
                 self.needs_redraw = true;
             }
             Err(e) => {
@@ -244,6 +289,11 @@ impl AppState {
 
     /// Select next transaction and auto-scroll to keep it visible
     pub fn select_next(&mut self, max_rows: usize) {
+        // Only get count if we actually need it (cache makes this fast anyway)
+        if self.transactions.is_empty() {
+            return;
+        }
+        
         let filtered_count = self.get_filtered_transaction_count();
         if filtered_count > 0 {
             self.selected_index = (self.selected_index + 1) % filtered_count;
@@ -252,8 +302,13 @@ impl AppState {
         }
     }
 
-    /// Select previous transaction and auto-scroll to keep it visible
+    /// Select previous transaction and auto-scroll to keep it visible  
     pub fn select_previous(&mut self, max_rows: usize) {
+        // Only get count if we actually need it (cache makes this fast anyway)
+        if self.transactions.is_empty() {
+            return;
+        }
+        
         let filtered_count = self.get_filtered_transaction_count();
         if filtered_count > 0 {
             self.selected_index = if self.selected_index == 0 {
@@ -299,14 +354,85 @@ impl AppState {
         self.filter_mode = self.filter_mode.toggle();
         self.selected_index = 0;
         self.scroll_offset = 0;
+        self.cache_dirty = true;
         self.needs_redraw = true;
     }
 
-    /// Get the count of transactions that match current filter
-    pub fn get_filtered_transaction_count(&self) -> usize {
-        match self.filter_mode {
-            FilterMode::All => self.transactions.len(),
-            FilterMode::DexOnly => self.transactions.iter().filter(|tx| tx.is_dex).count(),
+    /// Get the count of transactions that match current filter (cached)
+    pub fn get_filtered_transaction_count(&mut self) -> usize {
+        self.ensure_cache_valid();
+        self.cached_filtered_count
+    }
+
+    /// Build and cache filtered/sorted transaction indices if needed
+    fn ensure_cache_valid(&mut self) {
+        if !self.cache_dirty {
+            return;
         }
+
+        // Build list of indices for filtered transactions
+        let mut indices: Vec<usize> = (0..self.transactions.len())
+            .filter(|&i| {
+                let tx = &self.transactions[i];
+                match self.filter_mode {
+                    FilterMode::All => true,
+                    FilterMode::DexOnly => tx.is_dex,
+                }
+            })
+            .collect();
+
+        // Cache the count before sorting
+        self.cached_filtered_count = indices.len();
+        self.cached_filtered_count_display = indices.len(); // Update display cache too
+
+        // Sort indices based on sort field
+        match self.sort_field {
+            SortField::Default => {
+                // Keep insertion order
+            }
+            SortField::GasPrice => {
+                indices.sort_by(|&a, &b| {
+                    let a_price = self.transactions[a].gas_price_f64; // Use pre-computed value!
+                    let b_price = self.transactions[b].gas_price_f64; // Use pre-computed value!
+                    b_price.partial_cmp(&a_price).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            SortField::Value => {
+                indices.sort_by(|&a, &b| {
+                    let a_val = self.transactions[a].value_f64; // Use pre-computed value!
+                    let b_val = self.transactions[b].value_f64; // Use pre-computed value!
+                    b_val.partial_cmp(&a_val).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            SortField::Nonce => {
+                indices.sort_by_key(|&i| self.transactions[i].nonce);
+            }
+        }
+
+        self.cached_filtered_sorted = indices;
+        self.cache_dirty = false;
+    }
+
+    /// Get filtered and sorted transactions (uses cache)
+    pub fn get_filtered_sorted_transactions(&mut self) -> Vec<&MempoolTransaction> {
+        self.ensure_cache_valid();
+        self.cached_filtered_sorted
+            .iter()
+            .map(|&i| &self.transactions[i])
+            .collect()
+    }
+
+    /// Toggle the sort field
+    pub fn toggle_sort(&mut self) {
+        self.sort_field = self.sort_field.toggle();
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+        self.cache_dirty = true;
+        self.needs_redraw = true;
+    }
+
+    /// Mark cache as dirty (for external updates like new transactions)
+    pub fn mark_cache_dirty(&mut self) {
+        self.cache_dirty = true;
     }
 }
