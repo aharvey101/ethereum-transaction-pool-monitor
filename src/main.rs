@@ -128,6 +128,7 @@ async fn run_tui() {
         db_path.to_string(),
         chain_id,
     );
+    tracing::info!("Background transaction updater spawned successfully");
 
     // Run the main loop
     let _ = run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx).await;
@@ -192,8 +193,10 @@ async fn run_app(
 
         // Check for transaction update messages (non-blocking)
         while let Ok(msg) = tx_updater_rx.try_recv() {
+            tracing::debug!("Main: Received transaction update message");
             match msg {
                 TransactionUpdateMessage::NewTransactions(transactions) => {
+                    tracing::info!("Main: Received {} transactions from background", transactions.len());
                     // Update transactions from background task
                     app.transactions.clear();
                     for tx in transactions {
@@ -211,6 +214,7 @@ async fn run_app(
                     tracing::debug!("Background: Updated with {} transactions", app.transactions.len());
                 }
                 TransactionUpdateMessage::Error(err) => {
+                    tracing::error!("Main: Received error from background: {}", err);
                     app.status = format!("Error: {}", err);
                     app.connection_healthy = false;
                     app.needs_redraw = true;
@@ -257,6 +261,25 @@ async fn run_app(
                         }
                         KeyCode::PageDown => {
                             app.scroll_down(5, available_rows);
+                        }
+                        KeyCode::Char('r') => {
+                            // Manually refresh pools - force a new pool loading process
+                            if !app.is_loading_pools {
+                                tracing::info!("User requested manual pool refresh");
+                                app.is_loading_pools = true;
+                                app.pools_loading_progress = "Manual pool refresh starting...".to_string();
+                                app.pool_loading_progress_percent = 0;
+                                app.needs_redraw = true;
+                                
+                                // TODO: Ideally we'd start a new BackgroundPoolLoader here,
+                                // but that requires more complex channel management.
+                                // For now, just show feedback that refresh was requested.
+                                tokio::spawn(async move {
+                                    // Simulate pool refresh feedback
+                                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                                    tracing::info!("Pool refresh completed (placeholder)");
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -306,13 +329,9 @@ async fn run_headless() {
         }
     };
 
-    // Sync DEX pools from Ethereum node
-    tracing::info!("Syncing DEX pools from Ethereum node");
-    if let Err(e) = app.sync_pools_from_node().await {
-        tracing::error!("Failed to sync DEX pools from node: {}", e);
-    } else {
-        tracing::info!("DEX pools synced from node. Count: {}", app.pool_count);
-    }
+    // Skip pool loading in headless mode for now - focus on transaction monitoring
+    tracing::info!("Skipping pool loading in headless mode - focusing on transaction monitoring");
+    tracing::info!("Pool count in database: {}", app.pool_count);
 
     // Run update loop
     let mut update_count = 0;

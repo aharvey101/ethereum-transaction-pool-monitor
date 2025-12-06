@@ -194,10 +194,19 @@ impl AppState {
 
     /// Sync DEX pools directly from Ethereum node
     pub async fn sync_pools_from_node(&mut self) -> Result<()> {
+        // Check if we have sufficient pools already
+        let existing_pool_count = self.pool_db.pool_count().unwrap_or(0);
+        if existing_pool_count >= 1000 {
+            tracing::info!("Sufficient pools already in database ({}), skipping pool sync", existing_pool_count);
+            self.pool_count = existing_pool_count;
+            self.is_loading_pools = false;
+            self.pools_loading_progress = format!("Using existing {} pools from database", existing_pool_count);
+            return Ok(());
+        }
         
-        tracing::info!("Syncing pools from Ethereum node");
+        tracing::info!("Pool count low ({}), syncing pools from Ethereum node", existing_pool_count);
         
-        // Clear existing pools
+        // Clear existing pools only if we're doing a full reload
         self.pool_db.clear_pools()?;
         
         let mut total = 0;

@@ -40,24 +40,54 @@ impl BackgroundTransactionUpdater {
         chain_id: u32,
         tx: mpsc::UnboundedSender<TransactionUpdateMessage>,
     ) -> Result<()> {
-        // Initialize client and database
-        let client = EthereumClient::new(rpc_url).await?;
-        let pool_db = PoolDatabase::new(db_path)?;
+        tracing::info!("Background transaction updater: Initializing...");
+        tracing::info!("RPC URL: {}", rpc_url);
+        tracing::info!("DB Path: {}", db_path);
+        tracing::info!("Chain ID: {}", chain_id);
         
-        tracing::info!("Background transaction updater started");
+        // Initialize client and database
+        tracing::info!("Creating EthereumClient...");
+        let client = match EthereumClient::new(rpc_url).await {
+            Ok(client) => {
+                tracing::info!("EthereumClient created successfully");
+                client
+            }
+            Err(e) => {
+                tracing::error!("Failed to create EthereumClient: {}", e);
+                let _ = tx.send(TransactionUpdateMessage::Error(format!("Failed to create EthereumClient: {}", e)));
+                return Err(e);
+            }
+        };
+        
+        tracing::info!("Creating PoolDatabase...");
+        let pool_db = match PoolDatabase::new(db_path) {
+            Ok(db) => {
+                tracing::info!("PoolDatabase created successfully");
+                db
+            }
+            Err(e) => {
+                tracing::error!("Failed to create PoolDatabase: {}", e);
+                let _ = tx.send(TransactionUpdateMessage::Error(format!("Failed to create PoolDatabase: {}", e)));
+                return Err(e);
+            }
+        };
+        
+        tracing::info!("Background transaction updater started successfully");
         
         loop {
+            tracing::debug!("Background: Starting transaction fetch...");
             match client.get_pending_transactions(&pool_db, chain_id).await {
                 Ok(transactions) => {
-                    tracing::debug!("Background: Got {} pending transactions", transactions.len());
+                    tracing::info!("Background: Got {} pending transactions", transactions.len());
                     let _ = tx.send(TransactionUpdateMessage::NewTransactions(transactions));
                 }
                 Err(e) => {
-                    tracing::warn!("Background: Error fetching transactions: {}", e);
+                    tracing::error!("Background: Error fetching transactions: {}", e);
                     let _ = tx.send(TransactionUpdateMessage::Error(format!("Error fetching transactions: {}", e)));
                 }
             }
             
+            tracing::debug!("Background: Sleeping for 5 seconds...");
             // Wait 5 seconds before next update (same as original interval)
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
