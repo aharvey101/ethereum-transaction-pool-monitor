@@ -144,12 +144,12 @@ impl PoolDatabase {
     /// Count pools in database
     pub fn pool_count(&self) -> Result<u32> {
         let conn = self.conn.lock().unwrap();
-        let count: u32 = conn.query_row(
+        let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pools",
             [],
             |row| row.get(0),
         )?;
-        Ok(count)
+        Ok(count as u32)
     }
 
     /// Clear all pools (useful for updates)

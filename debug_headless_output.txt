@@ -1,0 +1,97 @@
+warning: value assigned to `v2_count` is never read
+  --> src/pool_loader.rs:73:17
+   |
+73 |         let mut v2_count = 0;
+   |                 ^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` on by default
+
+warning: value assigned to `total` is never read
+   --> src/pool_loader.rs:152:21
+    |
+152 |                     total += count;
+    |                     ^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: variable does not need to be mutable
+   --> src/main.rs:116:23
+    |
+116 |     let (_tx_updater, mut tx_updater_rx) = BackgroundTransactionUpdater::spawn(
+    |                       ----^^^^^^^^^^^^^
+    |                       |
+    |                       help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> src/main.rs:125:19
+    |
+125 |     let (_loader, mut pool_loader_rx) = BackgroundPoolLoader::spawn(
+    |                   ----^^^^^^^^^^^^^^
+    |                   |
+    |                   help: remove this `mut`
+
+warning: field `coingecko_client` is never read
+  --> src/app.rs:70:9
+   |
+64 | pub struct AppState {
+   |            -------- field in this struct
+...
+70 |     pub coingecko_client: CoinGeckoClient,
+   |         ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: methods `sync_dex_pools` and `get_filtered_transactions` are never used
+   --> src/app.rs:167:18
+    |
+97  | impl AppState {
+    | ------------- methods in this implementation
+...
+167 |     pub async fn sync_dex_pools(&mut self) -> Result<()> {
+    |                  ^^^^^^^^^^^^^^
+...
+356 |     pub fn get_filtered_transactions(&self) -> Vec<&MempoolTransaction> {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `http_client` and `base_url` are never read
+ --> src/coingecko.rs:7:5
+  |
+6 | pub struct CoinGeckoClient {
+  |            --------------- fields in this struct
+7 |     http_client: std::sync::Arc<reqwest::Client>,
+  |     ^^^^^^^^^^^
+8 |     base_url: String,
+  |     ^^^^^^^^
+
+warning: methods `fetch_pools` and `fetch_all_pools` are never used
+  --> src/coingecko.rs:22:18
+   |
+11 | impl CoinGeckoClient {
+   | -------------------- methods in this implementation
+...
+22 |     pub async fn fetch_pools(
+   |                  ^^^^^^^^^^^
+...
+58 |     pub async fn fetch_all_pools(
+   |                  ^^^^^^^^^^^^^^^
+
+warning: function `parse_coingecko_pool` is never used
+  --> src/coingecko.rs:91:4
+   |
+91 | fn parse_coingecko_pool(pool_data: &Value) -> Result<DexPool> {
+   |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: field `tx` is never read
+  --> src/pool_loader.rs:19:5
+   |
+18 | pub struct BackgroundPoolLoader {
+   |            -------------------- field in this struct
+19 |     tx: mpsc::UnboundedSender<PoolLoaderMessage>,
+   |     ^^
+
+warning: `ethereum-transaction-pool-monitor` (bin "ethereum-transaction-pool-monitor") generated 10 warnings (run `cargo fix --bin "ethereum-transaction-pool-monitor"` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/ethereum-transaction-pool-monitor`

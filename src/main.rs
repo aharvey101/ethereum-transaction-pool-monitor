@@ -113,7 +113,7 @@ async fn run_tui() {
 
     // Spawn background transaction updater FIRST (before pool loading)
     tracing::info!("Spawning background transaction updater task");
-    let (_tx_updater, tx_updater_rx) = BackgroundTransactionUpdater::spawn(
+    let (_tx_updater, mut tx_updater_rx) = BackgroundTransactionUpdater::spawn(
         rpc_url.clone(),
         db_path.to_string(),
         chain_id,
@@ -122,7 +122,7 @@ async fn run_tui() {
 
     // Spawn background pool loader (runs independently) 
     tracing::info!("Spawning background pool loader task");
-    let (_loader, pool_loader_rx) = BackgroundPoolLoader::spawn(
+    let (_loader, mut pool_loader_rx) = BackgroundPoolLoader::spawn(
         rpc_url.clone(),
         db_path.to_string(),
         chain_id,
@@ -160,6 +160,8 @@ async fn run_app(
     const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100); // Fast polling for responsiveness
 
     loop {
+        tracing::trace!("Main loop iteration starting");
+        
         // Get terminal size for dynamic row calculation
         let terminal_height = terminal.size()?.height as usize;
         let available_rows = terminal_height.saturating_sub(7); // 3 for header, 3 for footer, 1 margin
@@ -192,12 +194,13 @@ async fn run_app(
                     app.pools_loading_progress = format!("Error: {}", err);
                     app.needs_redraw = true;
                     tracing::error!("Pool loader error: {}", err);
+                }
             }
         }
 
         // Check for transaction update messages (non-blocking)
         while let Ok(msg) = tx_updater_rx.try_recv() {
-            tracing::debug!("Main: Received transaction update message");
+            tracing::info!("Main: Received transaction update message");
             match msg {
                 TransactionUpdateMessage::NewTransactions(transactions) => {
                     tracing::info!("Main: Received {} transactions from background", transactions.len());
@@ -215,7 +218,7 @@ async fn run_app(
                     app.mark_cache_dirty(); // Mark cache as dirty when transactions update
                     app.cached_title = format!(" Pending Transactions ({}) ", app.transactions.len()); // Update cached title
                     app.needs_redraw = true;
-                    tracing::debug!("Background: Updated with {} transactions", app.transactions.len());
+                    tracing::info!("Main: Updated app status to: {}", app.status);
                 }
                 TransactionUpdateMessage::Error(err) => {
                     tracing::error!("Main: Received error from background: {}", err);
@@ -226,7 +229,9 @@ async fn run_app(
                 }
             }
         }
-        }
+
+        // Yield to allow background tasks to run
+        tokio::task::yield_now().await;
 
         // Only redraw if something changed
         if app.needs_redraw {
