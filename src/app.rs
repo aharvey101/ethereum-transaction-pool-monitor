@@ -1,6 +1,7 @@
 use crate::eth_client::{EthereumClient, MempoolTransaction};
 use crate::pool_db::PoolDatabase;
 use crate::coingecko::CoinGeckoClient;
+use crate::pool_fetcher::PoolFetcher;
 use anyhow::Result;
 use std::collections::VecDeque;
 use chrono::Local;
@@ -15,6 +16,7 @@ pub struct AppState {
     pub client: EthereumClient,
     pub pool_db: PoolDatabase,
     pub coingecko_client: CoinGeckoClient,
+    pub pool_fetcher: PoolFetcher,
     pub chain_id: u32,
     pub status: String,
     pub is_running: bool,
@@ -31,6 +33,7 @@ impl AppState {
         let client = EthereumClient::new(rpc_url).await?;
         let pool_db = PoolDatabase::new(db_path)?;
         let coingecko_client = CoinGeckoClient::new();
+        let pool_fetcher = PoolFetcher::new(rpc_url);
         let pool_count = pool_db.pool_count().unwrap_or(0);
         
         Ok(AppState {
@@ -40,6 +43,7 @@ impl AppState {
             client,
             pool_db,
             coingecko_client,
+            pool_fetcher,
             chain_id,
             status: "Initializing...".to_string(),
             is_running: true,
@@ -103,6 +107,59 @@ impl AppState {
                 eprintln!("Error syncing DEX pools: {}", e);
             }
         }
+        Ok(())
+    }
+
+    /// Sync DEX pools directly from Ethereum node
+    pub async fn sync_pools_from_node(&mut self) -> Result<()> {
+        tracing::info!("Syncing pools from Ethereum node");
+        
+        // Clear existing pools
+        self.pool_db.clear_pools()?;
+        
+        let mut total = 0;
+
+        // Fetch UniswapV3 pools
+        match self.pool_fetcher.fetch_uniswap_v3_pools(&self.pool_db, self.chain_id).await {
+            Ok(count) => {
+                tracing::info!("Synced {} UniswapV3 pools", count);
+                total += count;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to sync UniswapV3 pools: {}", e);
+            }
+        }
+
+        // Fetch UniswapV2 pools
+        match self.pool_fetcher.fetch_uniswap_v2_pools(&self.pool_db, self.chain_id).await {
+            Ok(count) => {
+                tracing::info!("Synced {} UniswapV2 pools", count);
+                total += count;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to sync UniswapV2 pools: {}", e);
+            }
+        }
+
+        // If no pools fetched from node, seed with known addresses
+        if total == 0 {
+            tracing::info!("No pools fetched from node, seeding with known DEX addresses");
+            match self.pool_db.seed_known_dexes(self.chain_id) {
+                Ok(count) => {
+                    tracing::info!("Seeded {} known DEX addresses", count);
+                    total = count as u32;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to seed known DEX addresses: {}", e);
+                }
+            }
+        }
+
+        self.pool_count = self.pool_db.pool_count()?;
+        self.last_pool_sync = Local::now().format("%H:%M:%S").to_string();
+        self.needs_redraw = true;
+
+        tracing::info!("Pool sync complete. Total pools: {}", self.pool_count);
         Ok(())
     }
 
