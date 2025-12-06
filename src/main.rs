@@ -1,17 +1,19 @@
 mod app;
 mod eth_client;
 mod ui;
+mod dex;
+mod pool_db;
+mod coingecko;
 
 use app::AppState;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
-use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() {
@@ -38,9 +40,13 @@ async fn main() {
 
     // Get RPC URL from environment or use default
     let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://192.168.0.14:8545".to_string());
+    
+    // Database path and chain ID (1 = Ethereum mainnet)
+    let db_path = "dex_pools.db";
+    let chain_id = 1u32;
 
     // Create app state
-    let mut app = match AppState::new(&rpc_url).await {
+    let mut app = match AppState::new(&rpc_url, db_path, chain_id).await {
         Ok(app) => app,
         Err(e) => {
             let _ = disable_raw_mode();
@@ -50,23 +56,16 @@ async fn main() {
                 DisableMouseCapture
             );
             let _ = terminal.show_cursor();
-            eprintln!("Failed to connect to Ethereum node at {}: {}", rpc_url, e);
+            eprintln!("Failed to initialize application: {}", e);
             eprintln!("Make sure your local Ethereum node is running.");
             eprintln!("You can set the RPC URL with: export ETH_RPC_URL=http://your-rpc-url:port");
             return;
         }
     };
 
-    // Spawn task to update transactions periodically
-    let rpc_url_clone = rpc_url.clone();
-    let _update_handle = tokio::spawn(async move {
-        if let Ok(update_client) = eth_client::EthereumClient::new(&rpc_url_clone).await {
-            loop {
-                sleep(Duration::from_secs(5)).await;
-                let _ = update_client.get_pending_transactions().await;
-            }
-        }
-    });
+    // Initial sync of DEX pools (will run in background)
+    let app_ref = &mut app;
+    let _ = app_ref.sync_dex_pools().await;
 
     // Run the main loop
     let _ = run_app(&mut terminal, &mut app).await;
@@ -88,39 +87,68 @@ async fn run_app(
     // Initial update
     let _ = app.update_transactions().await;
 
+    let mut last_update = std::time::Instant::now();
+    const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+
     loop {
         // Get terminal size for dynamic row calculation
         let terminal_height = terminal.size()?.height as usize;
         let available_rows = terminal_height.saturating_sub(7); // 3 for header, 3 for footer, 1 margin
 
-        // Draw UI
-        terminal.draw(|f| ui::draw(f, app))?;
+        // Only redraw if something changed
+        if app.needs_redraw {
+            terminal.draw(|f| ui::draw(f, app))?;
+            app.needs_redraw = false;
+        }
 
-        // Handle input with timeout to allow periodic updates
-        if crossterm::event::poll(Duration::from_millis(500))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        app.is_running = false;
-                        break;
+        // Check if it's time for periodic updates (5 seconds)
+        let now = std::time::Instant::now();
+        let time_until_update = if now.duration_since(last_update) >= UPDATE_INTERVAL {
+            Duration::from_millis(0)
+        } else {
+            UPDATE_INTERVAL - now.duration_since(last_update)
+        };
+
+        // Handle input with timeout
+        if crossterm::event::poll(time_until_update)? {
+            match event::read()? {
+                Event::Key(key) => {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => {
+                            app.is_running = false;
+                            break;
+                        }
+                        KeyCode::Up => {
+                            app.select_previous(available_rows);
+                        }
+                        KeyCode::Down => {
+                            app.select_next(available_rows);
+                        }
+                        KeyCode::PageUp => {
+                            app.scroll_up(5);
+                        }
+                        KeyCode::PageDown => {
+                            app.scroll_down(5, available_rows);
+                        }
+                        _ => {}
                     }
-                    KeyCode::Up => {
-                        app.select_previous(available_rows);
-                    }
-                    KeyCode::Down => {
-                        app.select_next(available_rows);
-                    }
-                    KeyCode::PageUp => {
-                        app.scroll_up(5);
-                    }
-                    KeyCode::PageDown => {
-                        app.scroll_down(5, available_rows);
-                    }
-                    _ => {}
                 }
+                Event::Mouse(mouse) => {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            app.select_previous(available_rows);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            app.select_next(available_rows);
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
             }
         } else {
-            // Periodically update transactions
+            // Timeout expired, time for periodic update
+            last_update = std::time::Instant::now();
             let _ = app.update_transactions().await;
         }
     }
