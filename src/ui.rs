@@ -67,49 +67,43 @@ fn draw_header(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
 fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
     // Calculate how many rows can fit (subtract 3 for header, borders, etc)
     let available_rows = area.height.saturating_sub(3) as usize;
-    let filtered_txs = app.get_filtered_transactions();
-    let transactions = filtered_txs
-        .into_iter()
+    
+    // Use cached filtered/sorted data (cache is pre-populated in main loop for performance)
+    // Direct access to cached indices to avoid expensive re-sorting
+    let transactions = app.cached_filtered_sorted
+        .iter()
         .skip(app.scroll_offset)
         .take(available_rows)
+        .map(|&i| &app.transactions[i])
         .collect::<Vec<_>>();
 
-    let rows: Vec<Row> = transactions
-        .iter()
-        .enumerate()
-        .map(|(i, tx)| {
-            let is_selected = app.selected_index == app.scroll_offset + i;
-            
-            // Style based on selection and DEX status
-            let style = if is_selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else if tx.is_dex {
-                // Highlight DEX transactions in green
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
+    // Pre-allocate row vector for better performance
+    let mut rows = Vec::with_capacity(transactions.len());
+    
+    for (i, tx) in transactions.iter().enumerate() {
+        let is_selected = app.selected_index == app.scroll_offset + i;
+        
+        // Simplified styling - only apply when needed
+        let style = if is_selected {
+            Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+        } else if tx.is_dex {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
 
-            let to_display = match &tx.to {
-                Some(addr) => addr.clone(),
-                None => "Contract Creation".to_string(),
-            };
+        // Avoid string allocation for common case
+        let to_display = tx.to.as_deref().unwrap_or("Contract Creation");
 
-            Row::new(vec![
-                Span::styled(&tx.from, style),
-                Span::styled(to_display, style),
-                Span::styled(&tx.value_eth, style),
-                Span::styled(&tx.gas_price_gwei, style),
-                Span::styled(format!("{}", tx.nonce), style),
-            ])
-            .style(style)
-        })
-        .collect();
+        // Create row - balance performance with lifetime requirements
+        rows.push(Row::new(vec![
+            tx.from.clone(), // Clone needed for owned string
+            to_display.to_string(), // Clone needed for owned string
+            tx.value_eth.clone(), // Clone needed for owned string 
+            tx.gas_price_gwei.clone(), // Clone needed for owned string
+            tx.nonce.to_string(), // Convert to owned string
+        ]).style(style));
+    }
 
     let table = Table::new(
         rows,
@@ -128,13 +122,8 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Pending Transactions ({}) ", app.transactions.len()))
+            .title(&*app.cached_title) // Use cached title to avoid repeated format! calls
             .title_alignment(Alignment::Left)
-    )
-    .row_highlight_style(
-        Style::default()
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD)
     );
 
     f.render_widget(table, area);
@@ -223,11 +212,12 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DEX/All)  | q: Quit  | Green = DEX transactions";
+    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DEX/All) | s: Sort  | q: Quit  | Green = DEX transactions";
     let status = &app.status;
-    let filter_status = format!("Filter: {} | TX Count: {}", 
-        app.filter_mode.label(), 
-        app.get_filtered_transaction_count()
+    let filter_status = format!("Filter: {} | Sort: {} | TX Count: {}", 
+        app.filter_mode.label(),
+        app.sort_field.label(),
+        app.cached_filtered_count_display
     );
 
     let footer = ratatui::widgets::Paragraph::new(

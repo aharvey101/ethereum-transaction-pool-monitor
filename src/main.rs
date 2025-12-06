@@ -6,9 +6,11 @@ mod pool_db;
 mod coingecko;
 mod pool_fetcher;
 mod pool_loader;
+mod transaction_updater;
 
 use app::AppState;
 use pool_loader::BackgroundPoolLoader;
+use transaction_updater::{BackgroundTransactionUpdater, TransactionUpdateMessage};
 use crossterm::{
     event::{self, DisableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
@@ -18,6 +20,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
+use chrono::Local;
 
 #[tokio::main]
 async fn main() {
@@ -118,8 +121,16 @@ async fn run_tui() {
     app.is_loading_pools = true;
     app.pools_loading_progress = "Pool scan starting...".to_string();
 
+    // Spawn background transaction updater
+    tracing::info!("Spawning background transaction updater task");
+    let (_tx_updater, tx_updater_rx) = BackgroundTransactionUpdater::spawn(
+        rpc_url.clone(),
+        db_path.to_string(),
+        chain_id,
+    );
+
     // Run the main loop
-    let _ = run_app(&mut terminal, &mut app, pool_loader_rx).await;
+    let _ = run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx).await;
 
     // Restore terminal
     let _ = disable_raw_mode();
@@ -135,16 +146,13 @@ async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut AppState,
     mut pool_loader_rx: tokio::sync::mpsc::UnboundedReceiver<pool_loader::PoolLoaderMessage>,
+    mut tx_updater_rx: tokio::sync::mpsc::UnboundedReceiver<TransactionUpdateMessage>,
 ) -> io::Result<()> {
     use pool_loader::PoolLoaderMessage;
     
-    // Initial update
-    let _ = app.update_transactions().await;
-
+    // Background tasks will handle initial updates
     let _last_update = std::time::Instant::now();
-    let mut last_tx_update = std::time::Instant::now();
     const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100); // Fast polling for responsiveness
-    const TX_UPDATE_INTERVAL: Duration = Duration::from_secs(5); // Update transactions every 5 seconds
 
     loop {
         // Get terminal size for dynamic row calculation
@@ -179,29 +187,50 @@ async fn run_app(
                     app.pools_loading_progress = format!("Error: {}", err);
                     app.needs_redraw = true;
                     tracing::error!("Pool loader error: {}", err);
+            }
+        }
+
+        // Check for transaction update messages (non-blocking)
+        while let Ok(msg) = tx_updater_rx.try_recv() {
+            match msg {
+                TransactionUpdateMessage::NewTransactions(transactions) => {
+                    // Update transactions from background task
+                    app.transactions.clear();
+                    for tx in transactions {
+                        app.transactions.push_back(tx);
+                        if app.transactions.len() > 1000 { // MAX_TRANSACTIONS_DISPLAY
+                            app.transactions.pop_front();
+                        }
+                    }
+                    app.status = format!("{} pending transactions found", app.transactions.len());
+                    app.last_update = Local::now().format("%H:%M:%S").to_string();
+                    app.connection_healthy = true;
+                    app.mark_cache_dirty(); // Mark cache as dirty when transactions update
+                    app.cached_title = format!(" Pending Transactions ({}) ", app.transactions.len()); // Update cached title
+                    app.needs_redraw = true;
+                    tracing::debug!("Background: Updated with {} transactions", app.transactions.len());
+                }
+                TransactionUpdateMessage::Error(err) => {
+                    app.status = format!("Error: {}", err);
+                    app.connection_healthy = false;
+                    app.needs_redraw = true;
+                    tracing::warn!("Background transaction update error: {}", err);
                 }
             }
+        }
         }
 
         // Only redraw if something changed
         if app.needs_redraw {
+            // Update cache before drawing to ensure performance and fresh display data
+            let _ = app.get_filtered_transaction_count();
+            let _ = app.get_filtered_sorted_transactions(); // Pre-populate the sorted cache
             terminal.draw(|f| ui::draw(f, app))?;
             app.needs_redraw = false;
         }
 
-        // Check if it's time for periodic transaction updates (5 seconds)
-        let now = std::time::Instant::now();
-        let time_until_tx_update = if now.duration_since(last_tx_update) >= TX_UPDATE_INTERVAL {
-            Duration::from_millis(0)
-        } else {
-            TX_UPDATE_INTERVAL - now.duration_since(last_tx_update)
-        };
-
-        // Poll for input with shorter timeout for responsiveness
-        let time_until_input = INPUT_POLL_INTERVAL.min(time_until_tx_update);
-
-        // Handle input with timeout
-        if crossterm::event::poll(time_until_input)? {
+        // Poll for input with fast responsiveness (background tasks handle data updates)
+        if crossterm::event::poll(INPUT_POLL_INTERVAL)? {
             match event::read()? {
                 Event::Key(key) => {
                     match key.code {
@@ -212,6 +241,10 @@ async fn run_app(
                         KeyCode::Char('f') => {
                             // Toggle filter between All and DEX only
                             app.toggle_filter();
+                        }
+                        KeyCode::Char('s') => {
+                            // Toggle sort field
+                            app.toggle_sort();
                         }
                         KeyCode::Up => {
                             app.select_previous(available_rows);
@@ -228,24 +261,21 @@ async fn run_app(
                         _ => {}
                     }
                 }
-                Event::Mouse(mouse) => {
-                    match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            app.select_previous(available_rows);
-                        }
-                        MouseEventKind::ScrollDown => {
-                            app.select_next(available_rows);
-                        }
-                        _ => {}
-                    }
-                }
+                 Event::Mouse(mouse) => {
+                     match mouse.kind {
+                         MouseEventKind::ScrollUp => {
+                             app.scroll_up(1);
+                         }
+                         MouseEventKind::ScrollDown => {
+                             app.scroll_down(1, available_rows);
+                         }
+                         _ => {}
+                     }
+                 }
                 _ => {}
             }
-        } else if now.duration_since(last_tx_update) >= TX_UPDATE_INTERVAL {
-            // Timeout expired, time for periodic transaction update
-            last_tx_update = std::time::Instant::now();
-            let _ = app.update_transactions().await;
         }
+        // Background tasks handle all data updates - no blocking operations in main loop
     }
 
     Ok(())
