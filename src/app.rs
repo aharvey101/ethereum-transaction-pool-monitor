@@ -305,14 +305,13 @@ impl AppState {
 
     /// Select next transaction and auto-scroll to keep it visible
     pub fn select_next(&mut self, max_rows: usize) {
-        // Only get count if we actually need it (cache makes this fast anyway)
         if self.transactions.is_empty() {
             return;
         }
         
         let filtered_count = self.get_filtered_transaction_count();
-        if filtered_count > 0 {
-            self.selected_index = (self.selected_index + 1) % filtered_count;
+        if filtered_count > 0 && self.selected_index < filtered_count - 1 {
+            self.selected_index += 1;
             self.ensure_selection_visible(max_rows);
             self.needs_redraw = true;
         }
@@ -320,18 +319,12 @@ impl AppState {
 
     /// Select previous transaction and auto-scroll to keep it visible  
     pub fn select_previous(&mut self, max_rows: usize) {
-        // Only get count if we actually need it (cache makes this fast anyway)
         if self.transactions.is_empty() {
             return;
         }
         
-        let filtered_count = self.get_filtered_transaction_count();
-        if filtered_count > 0 {
-            self.selected_index = if self.selected_index == 0 {
-                filtered_count - 1
-            } else {
-                self.selected_index - 1
-            };
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
             self.ensure_selection_visible(max_rows);
             self.needs_redraw = true;
         }
