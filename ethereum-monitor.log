@@ -1,42 +1,22 @@
-[2m2025-12-06T04:05:31.648637Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Running in DEBUG mode (headless)
-[2m2025-12-06T04:05:31.648714Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Initializing Ethereum mempool monitor
-[2m2025-12-06T04:05:31.648729Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m RPC URL: http://192.168.0.14:8545
-[2m2025-12-06T04:05:31.648741Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Database: dex_pools.db
-[2m2025-12-06T04:05:31.652900Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Application initialized successfully
-[2m2025-12-06T04:05:31.652928Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Syncing DEX pools from Ethereum node
-[2m2025-12-06T04:05:31.652934Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Syncing pools from Ethereum node
-[2m2025-12-06T04:05:31.653381Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Fetching UniswapV3 pools from node for chain_id: 1
-[2m2025-12-06T04:05:31.661217Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.665109Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.670961Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.674840Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.679165Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.682879Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.686957Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.690926Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.694814Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.698362Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.702240Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.706309Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.710194Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.714384Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.718258Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.722207Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.726612Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.731158Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.735279Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.739171Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m RPC error: {"code":-32602,"data":"Invalid variadic value or array type: data did not match any variant of untagged enum Variadic at line 1 column 54","message":"Invalid params"}
-[2m2025-12-06T04:05:31.739247Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Reached chunk limit for UniswapV3
-[2m2025-12-06T04:05:31.739264Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Synced 0 UniswapV3 pools
-[2m2025-12-06T04:05:31.739278Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Fetching UniswapV2 pools from node for chain_id: 1
-[2m2025-12-06T04:05:32.640956Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Reached chunk limit for UniswapV2
-[2m2025-12-06T04:05:32.641030Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Synced 0 UniswapV2 pools
-[2m2025-12-06T04:05:32.641046Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m No pools fetched from node, seeding with known DEX addresses
-[2m2025-12-06T04:05:32.642796Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Seeded 12 known DEX addresses
-[2m2025-12-06T04:05:32.643208Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Pool sync complete. Total pools: 12
-[2m2025-12-06T04:05:32.643233Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m DEX pools synced from node. Count: 12
-[2m2025-12-06T04:05:32.643257Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Transaction update #1
-[2m2025-12-06T04:05:35.470454Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Fetched 1000 pending transactions
-[2m2025-12-06T04:05:35.470497Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m DEX transactions: 1
-[2m2025-12-06T04:05:35.470506Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m DEX TX - From: 0xec67e10a | To: 0xe592427a | Value: 0 ETH | Gas: 322.00 Gwei
-[2m2025-12-06T04:05:40.472517Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Transaction update #2
+[2m2025-12-06T04:19:53.376434Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Running in DEBUG mode (headless)
+[2m2025-12-06T04:19:53.376569Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Initializing Ethereum mempool monitor
+[2m2025-12-06T04:19:53.376583Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m RPC URL: http://192.168.0.14:8545
+[2m2025-12-06T04:19:53.376591Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Database: dex_pools.db
+[2m2025-12-06T04:19:53.386701Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Application initialized successfully
+[2m2025-12-06T04:19:53.386718Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Syncing DEX pools from Ethereum node
+[2m2025-12-06T04:19:53.386743Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Syncing pools from Ethereum node
+[2m2025-12-06T04:19:53.387220Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Fetching UniswapV3 pools from node
+[2m2025-12-06T04:19:53.395710Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Current block: 23935694
+[2m2025-12-06T04:19:53.395780Z[0m [33m WARN[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Failed to sync UniswapV3 pools: odd number of digits
+[2m2025-12-06T04:19:53.395808Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Fetching UniswapV2 pools from node
+[2m2025-12-06T04:19:53.403944Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Current block: 23935694
+[2m2025-12-06T04:19:54.563105Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_fetcher[0m[2m:[0m Adding 273 UniswapV2 pools to database
+[2m2025-12-06T04:19:54.567409Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Synced 273 UniswapV2 pools
+[2m2025-12-06T04:19:54.567737Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::app[0m[2m:[0m Pool sync complete. Total pools: 273
+[2m2025-12-06T04:19:54.567753Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m DEX pools synced from node. Count: 273
+[2m2025-12-06T04:19:54.567761Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Transaction update #1
+[2m2025-12-06T04:19:57.031292Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Fetched 1000 pending transactions
+[2m2025-12-06T04:19:57.031333Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m DEX transactions: 0
+[2m2025-12-06T04:20:02.033477Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Transaction update #2
+[2m2025-12-06T04:20:04.068874Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Fetched 1000 pending transactions
+[2m2025-12-06T04:20:04.068913Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m DEX transactions: 0

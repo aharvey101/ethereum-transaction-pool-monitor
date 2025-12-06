@@ -141,16 +141,27 @@ impl AppState {
             }
         }
 
-        // If no pools fetched from node, seed with known addresses
+        // If no pools fetched from node, try subgraph
         if total == 0 {
-            tracing::info!("No pools fetched from node, seeding with known DEX addresses");
-            match self.pool_db.seed_known_dexes(self.chain_id) {
+            tracing::info!("No pools fetched from node, trying The Graph subgraph");
+            match self.pool_fetcher.fetch_from_subgraph(&self.pool_db).await {
                 Ok(count) => {
-                    tracing::info!("Seeded {} known DEX addresses", count);
-                    total = count as u32;
+                    tracing::info!("Fetched {} pools from The Graph subgraph", count);
+                    total = count;
                 }
                 Err(e) => {
-                    tracing::error!("Failed to seed known DEX addresses: {}", e);
+                    tracing::warn!("Failed to fetch from subgraph: {}", e);
+                    // Fall back to seeding with known DEX addresses
+                    tracing::info!("Falling back to seeding with known DEX addresses");
+                    match self.pool_db.seed_known_dexes(self.chain_id) {
+                        Ok(count) => {
+                            tracing::info!("Seeded {} known DEX addresses", count);
+                            total = count as u32;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to seed known DEX addresses: {}", e);
+                        }
+                    }
                 }
             }
         }
