@@ -152,19 +152,25 @@ async fn run_app(
         // Check for pool loader messages (non-blocking)
         while let Ok(msg) = pool_loader_rx.try_recv() {
             match msg {
-                PoolLoaderMessage::Progress(progress_msg, count) => {
-                    app.pools_loading_progress = format!("{} - {} pools found", progress_msg, count);
-                    app.pools_found_count = count;
+                PoolLoaderMessage::Progress(progress_msg, v2_count, v3_count, progress_pct) => {
+                    app.v2_pools_found = v2_count;
+                    app.v3_pools_found = v3_count;
+                    app.pools_found_count = v2_count + v3_count;
+                    app.pool_loading_progress_percent = progress_pct;
+                    app.pools_loading_progress = progress_msg;
                     app.needs_redraw = true;
-                    tracing::debug!("Pool loader progress: {}", progress_msg);
+                    tracing::debug!("Pool loader progress: V2={} V3={} ({}%)", v2_count, v3_count, progress_pct);
                 }
-                PoolLoaderMessage::Complete(final_count) => {
+                PoolLoaderMessage::Complete(v2_count, v3_count, final_count) => {
+                    app.v2_pools_found = v2_count;
+                    app.v3_pools_found = v3_count;
                     app.pool_count = final_count;
                     app.pools_found_count = final_count;
+                    app.pool_loading_progress_percent = 100;
                     app.is_loading_pools = false;
-                    app.pools_loading_progress = format!("Loaded {} pools", final_count);
+                    app.pools_loading_progress = format!("Loaded {} pools (V2: {}, V3: {})", final_count, v2_count, v3_count);
                     app.needs_redraw = true;
-                    tracing::info!("Pool loader complete: {} pools found", final_count);
+                    tracing::info!("Pool loader complete: V2={} V3={} Total={}", v2_count, v3_count, final_count);
                 }
                 PoolLoaderMessage::Error(err) => {
                     app.is_loading_pools = false;
