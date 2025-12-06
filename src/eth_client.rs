@@ -47,7 +47,11 @@ impl MempoolTransaction {
         
         // Check if the "to" address is a known DEX pool from database
         let is_dex = to_opt.as_ref().map_or(false, |addr| {
-            pool_db.is_dex_pool(addr, chain_id).unwrap_or(false)
+            let result = pool_db.is_dex_pool(addr, chain_id).unwrap_or(false);
+            if result {
+                tracing::debug!("DEX pool detected - Address: {}, Value: {}, Gas: {}", addr, value_eth, gas_price_gwei);
+            }
+            result
         });
 
         Ok(MempoolTransaction {
