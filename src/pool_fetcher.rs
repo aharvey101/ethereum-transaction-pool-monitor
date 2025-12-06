@@ -150,64 +150,6 @@ impl PoolFetcher {
 
         Ok(all_pools.len() as u32)
     }
-
-    /// Fetch pools from The Graph subgraph (fallback for historical data)
-    /// Uses the Uniswap V2 subgraph to get all known pairs
-    pub async fn fetch_from_subgraph(&self, pool_db: &PoolDatabase) -> Result<u32> {
-        const SUBGRAPH_URL: &str = "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v2";
-        
-        tracing::info!("Fetching UniswapV2 pairs from The Graph subgraph");
-        
-        let query = r#"
-        query {
-            pairs(first: 1000, orderBy: txCount, orderDirection: desc) {
-                id
-            }
-        }
-        "#;
-        
-        let client = reqwest::Client::new();
-        let response = client
-            .post(SUBGRAPH_URL)
-            .json(&serde_json::json!({
-                "query": query
-            }))
-            .send()
-            .await?;
-        
-        let result: serde_json::Value = response.json().await?;
-        
-        let mut all_pools = Vec::new();
-        
-        if let Some(pairs) = result
-            .get("data")
-            .and_then(|d| d.get("pairs"))
-            .and_then(|p| p.as_array())
-        {
-            tracing::info!("Fetched {} pairs from subgraph", pairs.len());
-            
-            for pair in pairs {
-                if let Some(address) = pair.get("id").and_then(|id| id.as_str()) {
-                    all_pools.push(DexPool {
-                        address: address.to_string(),
-                        protocol: "UniswapV2".to_string(),
-                        token0: None,
-                        token1: None,
-                        chain_id: 1,
-                    });
-                }
-            }
-            
-            if !all_pools.is_empty() {
-                tracing::info!("Adding {} pairs from subgraph to database", all_pools.len());
-                pool_db.add_pools(&all_pools)?;
-            }
-        } else {
-            tracing::warn!("Failed to parse subgraph response: {:?}", result);
-        }
-        
-        Ok(all_pools.len() as u32)
-    }
 }
 
 /// Parse UniswapV3 PoolCreated event using alloy
@@ -228,16 +170,22 @@ fn parse_v3_pool_created_log(log: &alloy::rpc::types::eth::Log) -> Result<DexPoo
     let token1 = Address::from_slice(token1_bytes);
     
     // Decode log data: (int24 tickSpacing, address pool)
-    let decoded: (i32, Address) = SolValue::abi_decode(&log.inner.data.data, false)?;
-    let pool_address = decoded.1;
-
-    Ok(DexPool {
-        address: format!("{:?}", pool_address),
-        protocol: "UniswapV3".to_string(),
-        token0: Some(format!("{:?}", token0)),
-        token1: Some(format!("{:?}", token1)),
-        chain_id: 1,
-    })
+    match SolValue::abi_decode(&log.inner.data.data, false) {
+        Ok(decoded) => {
+            let (_, pool_address): (i32, Address) = decoded;
+            Ok(DexPool {
+                address: format!("{:?}", pool_address),
+                protocol: "UniswapV3".to_string(),
+                token0: Some(format!("{:?}", token0)),
+                token1: Some(format!("{:?}", token1)),
+                chain_id: 1,
+            })
+        }
+        Err(e) => {
+            tracing::trace!("Failed to decode V3 pool data: {}", e);
+            Err(anyhow::anyhow!("Failed to decode V3 pool: {}", e))
+        }
+    }
 }
 
 /// Parse UniswapV2 PairCreated event using alloy

@@ -119,21 +119,11 @@ impl AppState {
         
         let mut total = 0;
 
-        // Fetch UniswapV3 pools
-        match self.pool_fetcher.fetch_uniswap_v3_pools(&self.pool_db, self.chain_id).await {
-            Ok(count) => {
-                tracing::info!("Synced {} UniswapV3 pools", count);
-                total += count;
-            }
-            Err(e) => {
-                tracing::warn!("Failed to sync UniswapV3 pools: {}", e);
-            }
-        }
-
-        // Fetch UniswapV2 pools
+        // Fetch recent V2 pools from node
+        tracing::info!("Fetching UniswapV2 pools from node");
         match self.pool_fetcher.fetch_uniswap_v2_pools(&self.pool_db, self.chain_id).await {
             Ok(count) => {
-                tracing::info!("Synced {} UniswapV2 pools", count);
+                tracing::info!("Synced {} UniswapV2 pools from node", count);
                 total += count;
             }
             Err(e) => {
@@ -141,27 +131,28 @@ impl AppState {
             }
         }
 
-        // If no pools fetched from node, try subgraph
-        if total == 0 {
-            tracing::info!("No pools fetched from node, trying The Graph subgraph");
-            match self.pool_fetcher.fetch_from_subgraph(&self.pool_db).await {
+        // Fetch recent V3 pools from node
+        tracing::info!("Fetching UniswapV3 pools from node");
+        match self.pool_fetcher.fetch_uniswap_v3_pools(&self.pool_db, self.chain_id).await {
+            Ok(count) => {
+                tracing::info!("Synced {} UniswapV3 pools from node", count);
+                total += count;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to sync UniswapV3 pools: {}", e);
+            }
+        }
+
+        // If we don't have enough pools, fall back to seeding with known DEX addresses
+        if total < 100 {
+            tracing::info!("Not enough pools found from node ({} < 100), seeding with known DEX addresses", total);
+            match self.pool_db.seed_known_dexes(self.chain_id) {
                 Ok(count) => {
-                    tracing::info!("Fetched {} pools from The Graph subgraph", count);
-                    total = count;
+                    tracing::info!("Seeded {} known DEX addresses", count);
+                    total += count as u32;
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to fetch from subgraph: {}", e);
-                    // Fall back to seeding with known DEX addresses
-                    tracing::info!("Falling back to seeding with known DEX addresses");
-                    match self.pool_db.seed_known_dexes(self.chain_id) {
-                        Ok(count) => {
-                            tracing::info!("Seeded {} known DEX addresses", count);
-                            total = count as u32;
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to seed known DEX addresses: {}", e);
-                        }
-                    }
+                    tracing::error!("Failed to seed known DEX addresses: {}", e);
                 }
             }
         }
