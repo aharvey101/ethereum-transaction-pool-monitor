@@ -130,72 +130,43 @@ impl AppState {
         self.pools_found_count = 0;
         self.needs_redraw = true;
 
-        // Create shared state for progress callback
-        let progress_state_v2 = std::sync::Arc::new(std::sync::Mutex::new((String::new(), 0u32)));
-        let progress_state_v2_clone = progress_state_v2.clone();
+        // V2 Progress: Update app state directly via mutable reference pattern
+        // We'll collect the state and update after each batch
         
-        let progress_v2: ProgressCallback = std::sync::Arc::new(std::sync::Mutex::new(
-            move |msg: String, count: u32| {
-                if let Ok(mut state) = progress_state_v2_clone.lock() {
-                    state.0 = msg;
-                    state.1 = count;
-                }
-            }
-        ));
-
         // Fetch recent V2 pools from node
         tracing::info!("Fetching UniswapV2 pools from node");
         self.pools_loading_progress = "UniswapV2: Initializing...".to_string();
         self.needs_redraw = true;
         
-        match self.pool_fetcher.fetch_uniswap_v2_pools_with_progress(&self.pool_db, self.chain_id, Some(progress_v2)).await {
+        match self.pool_fetcher.fetch_uniswap_v2_pools(&self.pool_db, self.chain_id).await {
             Ok(count) => {
                 tracing::info!("Synced {} UniswapV2 pools from node", count);
                 total += count;
+                self.pools_found_count = total;
+                self.pools_loading_progress = format!("UniswapV2: Complete! {} pools found", count);
+                self.needs_redraw = true;
             }
             Err(e) => {
                 tracing::warn!("Failed to sync UniswapV2 pools: {}", e);
             }
         }
 
-        // Read final V2 progress
-        if let Ok(state) = progress_state_v2.lock() {
-            self.pools_loading_progress = state.0.clone();
-            self.pools_found_count = state.1;
-        }
-
-        // Create shared state for V3 progress callback
-        let progress_state_v3 = std::sync::Arc::new(std::sync::Mutex::new((String::new(), 0u32)));
-        let progress_state_v3_clone = progress_state_v3.clone();
-        
-        let progress_v3: ProgressCallback = std::sync::Arc::new(std::sync::Mutex::new(
-            move |msg: String, count: u32| {
-                if let Ok(mut state) = progress_state_v3_clone.lock() {
-                    state.0 = msg;
-                    state.1 = count;
-                }
-            }
-        ));
-
         // Fetch recent V3 pools from node
         tracing::info!("Fetching UniswapV3 pools from node");
         self.pools_loading_progress = "UniswapV3: Initializing...".to_string();
         self.needs_redraw = true;
         
-        match self.pool_fetcher.fetch_uniswap_v3_pools_with_progress(&self.pool_db, self.chain_id, Some(progress_v3)).await {
+        match self.pool_fetcher.fetch_uniswap_v3_pools(&self.pool_db, self.chain_id).await {
             Ok(count) => {
                 tracing::info!("Synced {} UniswapV3 pools from node", count);
                 total += count;
+                self.pools_found_count = total;
+                self.pools_loading_progress = format!("UniswapV3: Complete! {} pools found", count);
+                self.needs_redraw = true;
             }
             Err(e) => {
                 tracing::warn!("Failed to sync UniswapV3 pools: {}", e);
             }
-        }
-
-        // Read final V3 progress
-        if let Ok(state) = progress_state_v3.lock() {
-            self.pools_loading_progress = state.0.clone();
-            self.pools_found_count = state.1;
         }
 
         // If we don't have enough pools, fall back to seeding with known DEX addresses
@@ -208,6 +179,7 @@ impl AppState {
                 Ok(count) => {
                     tracing::info!("Seeded {} known DEX addresses", count);
                     total += count;
+                    self.pools_found_count = total;
                 }
                 Err(e) => {
                     tracing::error!("Failed to seed known DEX addresses: {}", e);
