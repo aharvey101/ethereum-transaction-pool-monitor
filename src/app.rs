@@ -281,15 +281,6 @@ impl AppState {
         }
     }
 
-    /// Get visible transactions for rendering (fits available terminal height)
-    pub fn get_visible_transactions(&self, max_rows: usize) -> Vec<&MempoolTransaction> {
-        self.transactions
-            .iter()
-            .skip(self.scroll_offset)
-            .take(max_rows)
-            .collect()
-    }
-
     /// Get filtered transactions based on current filter mode
     pub fn get_filtered_transactions(&self) -> Vec<&MempoolTransaction> {
         match self.filter_mode {
@@ -301,15 +292,6 @@ impl AppState {
                     .collect()
             }
         }
-    }
-
-    /// Get filtered and visible transactions for rendering
-    pub fn get_filtered_visible_transactions(&self, max_rows: usize) -> Vec<&MempoolTransaction> {
-        self.get_filtered_transactions()
-            .into_iter()
-            .skip(self.scroll_offset)
-            .take(max_rows)
-            .collect()
     }
 
     /// Toggle the filter mode between All and DexOnly
