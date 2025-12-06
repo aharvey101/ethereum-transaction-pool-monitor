@@ -146,12 +146,12 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
     f.render_widget(block, area);
 
     // Center the loading text
-    let padding_top = (inner.height as usize).saturating_sub(3) / 2;
+    let padding_top = (inner.height as usize).saturating_sub(4) / 2;
     let centered_area = Rect {
         x: inner.x,
         y: inner.y + padding_top as u16,
         width: inner.width,
-        height: 3,
+        height: 4,
     };
 
     let loading_text = ratatui::widgets::Paragraph::new(
@@ -165,6 +165,12 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
                 Span::styled(
                     &app.pools_loading_progress,
                     Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} pools found", app.pools_found_count),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
                 ),
             ]),
             Line::from(""),

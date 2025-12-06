@@ -27,6 +27,7 @@ pub struct AppState {
     pub needs_redraw: bool,
     pub is_loading_pools: bool,
     pub pools_loading_progress: String,
+    pub pools_found_count: u32,
 }
 
 impl AppState {
@@ -56,6 +57,7 @@ impl AppState {
             needs_redraw: true,
             is_loading_pools: false,
             pools_loading_progress: String::new(),
+            pools_found_count: 0,
         })
     }
 
@@ -116,6 +118,8 @@ impl AppState {
 
     /// Sync DEX pools directly from Ethereum node
     pub async fn sync_pools_from_node(&mut self) -> Result<()> {
+        use crate::pool_fetcher::ProgressCallback;
+        
         tracing::info!("Syncing pools from Ethereum node");
         
         // Clear existing pools
@@ -123,14 +127,28 @@ impl AppState {
         
         let mut total = 0;
         self.is_loading_pools = true;
+        self.pools_found_count = 0;
         self.needs_redraw = true;
+
+        // Create shared state for progress callback
+        let progress_state_v2 = std::sync::Arc::new(std::sync::Mutex::new((String::new(), 0u32)));
+        let progress_state_v2_clone = progress_state_v2.clone();
+        
+        let progress_v2: ProgressCallback = std::sync::Arc::new(std::sync::Mutex::new(
+            move |msg: String, count: u32| {
+                if let Ok(mut state) = progress_state_v2_clone.lock() {
+                    state.0 = msg;
+                    state.1 = count;
+                }
+            }
+        ));
 
         // Fetch recent V2 pools from node
         tracing::info!("Fetching UniswapV2 pools from node");
         self.pools_loading_progress = "UniswapV2: Initializing...".to_string();
         self.needs_redraw = true;
         
-        match self.pool_fetcher.fetch_uniswap_v2_pools(&self.pool_db, self.chain_id).await {
+        match self.pool_fetcher.fetch_uniswap_v2_pools_with_progress(&self.pool_db, self.chain_id, Some(progress_v2)).await {
             Ok(count) => {
                 tracing::info!("Synced {} UniswapV2 pools from node", count);
                 total += count;
@@ -140,12 +158,31 @@ impl AppState {
             }
         }
 
+        // Read final V2 progress
+        if let Ok(state) = progress_state_v2.lock() {
+            self.pools_loading_progress = state.0.clone();
+            self.pools_found_count = state.1;
+        }
+
+        // Create shared state for V3 progress callback
+        let progress_state_v3 = std::sync::Arc::new(std::sync::Mutex::new((String::new(), 0u32)));
+        let progress_state_v3_clone = progress_state_v3.clone();
+        
+        let progress_v3: ProgressCallback = std::sync::Arc::new(std::sync::Mutex::new(
+            move |msg: String, count: u32| {
+                if let Ok(mut state) = progress_state_v3_clone.lock() {
+                    state.0 = msg;
+                    state.1 = count;
+                }
+            }
+        ));
+
         // Fetch recent V3 pools from node
         tracing::info!("Fetching UniswapV3 pools from node");
         self.pools_loading_progress = "UniswapV3: Initializing...".to_string();
         self.needs_redraw = true;
         
-        match self.pool_fetcher.fetch_uniswap_v3_pools(&self.pool_db, self.chain_id).await {
+        match self.pool_fetcher.fetch_uniswap_v3_pools_with_progress(&self.pool_db, self.chain_id, Some(progress_v3)).await {
             Ok(count) => {
                 tracing::info!("Synced {} UniswapV3 pools from node", count);
                 total += count;
@@ -153,6 +190,12 @@ impl AppState {
             Err(e) => {
                 tracing::warn!("Failed to sync UniswapV3 pools: {}", e);
             }
+        }
+
+        // Read final V3 progress
+        if let Ok(state) = progress_state_v3.lock() {
+            self.pools_loading_progress = state.0.clone();
+            self.pools_found_count = state.1;
         }
 
         // If we don't have enough pools, fall back to seeding with known DEX addresses
@@ -164,6 +207,7 @@ impl AppState {
             match self.pool_db.seed_known_dexes(self.chain_id) {
                 Ok(count) => {
                     tracing::info!("Seeded {} known DEX addresses", count);
+                    total += count;
                 }
                 Err(e) => {
                     tracing::error!("Failed to seed known DEX addresses: {}", e);
@@ -175,6 +219,7 @@ impl AppState {
         self.last_pool_sync = Local::now().format("%H:%M:%S").to_string();
         self.is_loading_pools = false;
         self.pools_loading_progress = format!("Loaded {} pools", self.pool_count);
+        self.pools_found_count = self.pool_count;
         self.needs_redraw = true;
 
         tracing::info!("Pool sync complete. Total pools: {}", self.pool_count);
