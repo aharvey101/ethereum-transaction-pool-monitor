@@ -1,6 +1,6 @@
 use crate::app::AppState;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Alignment},
+    layout::{Constraint, Direction, Layout, Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Table, Row},
@@ -24,8 +24,13 @@ pub fn draw(f: &mut Frame, app: &AppState) {
     // Draw header
     draw_header(f, app, chunks[0]);
 
-    // Draw transaction list
-    draw_transaction_list(f, app, chunks[1]);
+    // Draw loading overlay or transaction list
+    if app.is_loading_pools {
+        draw_loading_overlay(f, app, chunks[1]);
+    } else {
+        // Draw transaction list
+        draw_transaction_list(f, app, chunks[1]);
+    }
 
     // Draw footer
     draw_footer(f, app, chunks[2]);
@@ -128,6 +133,46 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
     );
 
     f.render_widget(table, area);
+}
+
+fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Loading Pools ")
+        .title_alignment(Alignment::Center)
+        .style(Style::default().bg(Color::Black));
+    
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Center the loading text
+    let padding_top = (inner.height as usize).saturating_sub(3) / 2;
+    let centered_area = Rect {
+        x: inner.x,
+        y: inner.y + padding_top as u16,
+        width: inner.width,
+        height: 3,
+    };
+
+    let loading_text = ratatui::widgets::Paragraph::new(
+        vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "⏳ ",
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                ),
+                Span::styled(
+                    &app.pools_loading_progress,
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                ),
+            ]),
+            Line::from(""),
+        ]
+    )
+    .alignment(Alignment::Center);
+
+    f.render_widget(loading_text, centered_area);
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {

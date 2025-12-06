@@ -25,6 +25,8 @@ pub struct AppState {
     pub pool_count: u32,
     pub connection_healthy: bool,
     pub needs_redraw: bool,
+    pub is_loading_pools: bool,
+    pub pools_loading_progress: String,
 }
 
 impl AppState {
@@ -52,6 +54,8 @@ impl AppState {
             pool_count,
             connection_healthy: true,
             needs_redraw: true,
+            is_loading_pools: false,
+            pools_loading_progress: String::new(),
         })
     }
 
@@ -118,9 +122,14 @@ impl AppState {
         self.pool_db.clear_pools()?;
         
         let mut total = 0;
+        self.is_loading_pools = true;
+        self.needs_redraw = true;
 
         // Fetch recent V2 pools from node
         tracing::info!("Fetching UniswapV2 pools from node");
+        self.pools_loading_progress = "UniswapV2: Initializing...".to_string();
+        self.needs_redraw = true;
+        
         match self.pool_fetcher.fetch_uniswap_v2_pools(&self.pool_db, self.chain_id).await {
             Ok(count) => {
                 tracing::info!("Synced {} UniswapV2 pools from node", count);
@@ -133,6 +142,9 @@ impl AppState {
 
         // Fetch recent V3 pools from node
         tracing::info!("Fetching UniswapV3 pools from node");
+        self.pools_loading_progress = "UniswapV3: Initializing...".to_string();
+        self.needs_redraw = true;
+        
         match self.pool_fetcher.fetch_uniswap_v3_pools(&self.pool_db, self.chain_id).await {
             Ok(count) => {
                 tracing::info!("Synced {} UniswapV3 pools from node", count);
@@ -146,6 +158,9 @@ impl AppState {
         // If we don't have enough pools, fall back to seeding with known DEX addresses
         if total < 100 {
             tracing::info!("Not enough pools found from node ({} < 100), seeding with known DEX addresses", total);
+            self.pools_loading_progress = "Seeding with known DEX addresses...".to_string();
+            self.needs_redraw = true;
+            
             match self.pool_db.seed_known_dexes(self.chain_id) {
                 Ok(count) => {
                     tracing::info!("Seeded {} known DEX addresses", count);
@@ -158,6 +173,8 @@ impl AppState {
 
         self.pool_count = self.pool_db.pool_count()?;
         self.last_pool_sync = Local::now().format("%H:%M:%S").to_string();
+        self.is_loading_pools = false;
+        self.pools_loading_progress = format!("Loaded {} pools", self.pool_count);
         self.needs_redraw = true;
 
         tracing::info!("Pool sync complete. Total pools: {}", self.pool_count);
