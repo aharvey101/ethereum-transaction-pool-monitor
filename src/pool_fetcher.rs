@@ -5,11 +5,16 @@ use alloy_primitives::Address;
 use alloy_sol_types::SolValue;
 use std::str::FromStr;
 use crate::pool_db::{DexPool, PoolDatabase};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 /// Pool fetcher that queries the Ethereum node for pool creation events using alloy
 pub struct PoolFetcher {
     rpc_url: String,
 }
+
+/// Progress callback for pool loading - takes (window_message, total_pools_found)
+pub type ProgressCallback = Arc<Mutex<dyn Fn(String, u32) + Send>>;
 
 impl PoolFetcher {
     pub fn new(rpc_url: &str) -> Self {
@@ -23,11 +28,19 @@ impl PoolFetcher {
     /// Uses 100k block windows for efficiency
     /// UniswapV3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea313100
     pub async fn fetch_uniswap_v3_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
+        self.fetch_uniswap_v3_pools_with_progress(pool_db, _chain_id, None).await
+    }
+
+    /// Fetch UniswapV3 pools with progress callback
+    pub async fn fetch_uniswap_v3_pools_with_progress(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
         const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea313100";
         const UNISWAP_V3_DEPLOYMENT_BLOCK: u64 = 12_369_739; // V3 deployed on May 5, 2021
         const BLOCK_WINDOW: u64 = 100_000; // Query in 100k block windows for efficiency
 
         tracing::info!("Fetching UniswapV3 pools from node (scanning all blocks from deployment)");
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()("UniswapV3: Initializing...".to_string(), 0);
+        }
 
         // Create provider
         let provider = ProviderBuilder::new()
@@ -55,7 +68,11 @@ impl PoolFetcher {
             };
 
             let progress_pct = ((window_idx as f32 / total_windows as f32) * 100.0) as u32;
-            tracing::info!("Fetching UniswapV3 window {}/{} ({}%) - blocks {}-{}", window_idx, total_windows, progress_pct, from_block, to_block);
+            let msg = format!("UniswapV3: Scanning window {}/{} ({}%)", window_idx, total_windows, progress_pct);
+            tracing::info!("{} - blocks {}-{}", msg, from_block, to_block);
+            if let Some(ref cb) = progress {
+                cb.lock().unwrap()(msg, all_pools.len() as u32);
+            }
 
             let factory_addr = Address::from_str(UNISWAP_V3_FACTORY)?;
             
@@ -92,12 +109,19 @@ impl PoolFetcher {
             window_idx += 1;
         }
 
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()(format!("UniswapV3: Found {} pools, saving...", all_pools.len()), all_pools.len() as u32);
+        }
+
         if !all_pools.is_empty() {
             tracing::info!("Adding {} UniswapV3 pools to database", all_pools.len());
             pool_db.add_pools(&all_pools)?;
         }
 
         tracing::info!("UniswapV3 pool fetch complete: {} pools found", all_pools.len());
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()(format!("UniswapV3: Complete! {} pools found", all_pools.len()), all_pools.len() as u32);
+        }
         Ok(all_pools.len() as u32)
     }
 
@@ -107,11 +131,19 @@ impl PoolFetcher {
     /// Uses 100k block windows for efficiency
     /// UniswapV2 Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f
     pub async fn fetch_uniswap_v2_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
+        self.fetch_uniswap_v2_pools_with_progress(pool_db, _chain_id, None).await
+    }
+
+    /// Fetch UniswapV2 pools with progress callback
+    pub async fn fetch_uniswap_v2_pools_with_progress(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
         const UNISWAP_V2_FACTORY: &str = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f";
         const UNISWAP_V2_DEPLOYMENT_BLOCK: u64 = 10_000_835; // V2 deployed on May 5, 2020
         const BLOCK_WINDOW: u64 = 100_000; // Query in 100k block windows for efficiency
 
         tracing::info!("Fetching UniswapV2 pools from node (scanning all blocks from deployment)");
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()("UniswapV2: Initializing...".to_string(), 0);
+        }
 
         // Create provider
         let provider = ProviderBuilder::new()
@@ -139,7 +171,11 @@ impl PoolFetcher {
             };
 
             let progress_pct = ((window_idx as f32 / total_windows as f32) * 100.0) as u32;
-            tracing::info!("Fetching UniswapV2 window {}/{} ({}%) - blocks {}-{}", window_idx, total_windows, progress_pct, from_block, to_block);
+            let msg = format!("UniswapV2: Scanning window {}/{} ({}%)", window_idx, total_windows, progress_pct);
+            tracing::info!("{} - blocks {}-{}", msg, from_block, to_block);
+            if let Some(ref cb) = progress {
+                cb.lock().unwrap()(msg, all_pools.len() as u32);
+            }
 
             let factory_addr = Address::from_str(UNISWAP_V2_FACTORY)?;
             let event_filter = Filter::new()
@@ -173,12 +209,19 @@ impl PoolFetcher {
             window_idx += 1;
         }
 
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()(format!("UniswapV2: Found {} pools, saving...", all_pools.len()), all_pools.len() as u32);
+        }
+
         if !all_pools.is_empty() {
             tracing::info!("Adding {} UniswapV2 pools to database", all_pools.len());
             pool_db.add_pools(&all_pools)?;
         }
 
         tracing::info!("UniswapV2 pool fetch complete: {} pools found", all_pools.len());
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()(format!("UniswapV2: Complete! {} pools found", all_pools.len()), all_pools.len() as u32);
+        }
         Ok(all_pools.len() as u32)
     }
 }
