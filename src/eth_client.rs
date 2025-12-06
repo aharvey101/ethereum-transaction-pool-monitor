@@ -78,11 +78,19 @@ impl MempoolTransaction {
         // Extract transaction data for potential decoding
         let tx_data = value["input"].as_str().unwrap_or("0x").to_string();
         
-        // Decode transaction if it's a DeFi transaction
+        // Decode transaction based on type: swaps for routers, transfers for tokens
         let swap_info = if is_dex {
             if let Some(to_addr) = &to_opt {
                 let decoder = crate::transaction_decoder::TransactionDecoder::new();
-                decoder.decode_swap(to_addr, &tx_data)
+                if pool_db.is_dex_router(to_addr) {
+                    // Router transaction - decode as swap
+                    decoder.decode_swap(to_addr, &tx_data, &value_hex)
+                } else if pool_db.is_token_contract(to_addr) {
+                    // Token contract - decode as transfer
+                    decoder.decode_token_transfer(to_addr, &tx_data)
+                } else {
+                    None
+                }
             } else {
                 None
             }

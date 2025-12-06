@@ -100,7 +100,18 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
 
         // Display decoded swap info or regular "to" address
         let to_display = if let Some(swap_info) = &tx.swap_info {
-            format!("{}: {} → {}", swap_info.function_name, swap_info.token_in, swap_info.token_out)
+            let mut display = format!("{}: {} → {}", swap_info.function_name, swap_info.token_in, swap_info.token_out);
+            
+            // Add amount information if available
+            if let (Some(amount_in), Some(amount_out_min)) = (&swap_info.amount_in, &swap_info.amount_out_min) {
+                display.push_str(&format!(" | {} → {}", amount_in, amount_out_min));
+            } else if let Some(amount_in) = &swap_info.amount_in {
+                display.push_str(&format!(" | In: {}", amount_in));
+            } else if let Some(amount_out_min) = &swap_info.amount_out_min {
+                display.push_str(&format!(" | Min: {}", amount_out_min));
+            }
+            
+            display
         } else {
             tx.to.as_deref().unwrap_or("Contract Creation").to_string()
         };
