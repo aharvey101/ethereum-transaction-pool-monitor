@@ -2,7 +2,6 @@ use anyhow::Result;
 use crate::pool_fetcher::PoolFetcher;
 use crate::pool_db::PoolDatabase;
 use tokio::sync::mpsc;
-use std::path::Path;
 
 /// Messages sent from the background pool loader to the main app
 #[derive(Clone, Debug)]

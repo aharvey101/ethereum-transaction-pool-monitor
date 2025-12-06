@@ -124,7 +124,6 @@ impl AppState {
 
     /// Sync DEX pools directly from Ethereum node
     pub async fn sync_pools_from_node(&mut self) -> Result<()> {
-        use crate::pool_fetcher::ProgressCallback;
         
         tracing::info!("Syncing pools from Ethereum node");
         
