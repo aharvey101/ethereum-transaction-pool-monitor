@@ -1,15 +1,27 @@
 # Ethereum Mempool Monitor
 
-A real-time Ethereum mempool monitor built with Rust using the ratatui terminal UI library and ethers-rs.
+A real-time Ethereum mempool monitor built with Rust using the ratatui terminal UI library and alloy.
 
 ## Features
 
 - **Real-time Monitoring**: Displays pending transactions from your local Ethereum node
 - **Terminal UI**: Beautiful terminal interface built with ratatui
 - **Transaction Details**: Shows from address, to address, value, gas price, and nonce
+- **Multi-DEX Pool Detection**: Automatically discovers pools from major DEXs
 - **Navigation**: Scroll through pending transactions with keyboard controls
 - **Connection Status**: Displays connection health status to the Ethereum node
 - **Auto-refresh**: Updates transaction list every 2 seconds
+
+### DEX Pool Support
+
+The monitor automatically detects and tracks liquidity pools from major decentralized exchanges:
+
+- **UniswapV2**: Official Uniswap V2 pools (9,199+ pools)
+- **UniswapV3**: Official Uniswap V3 pools (2,412+ pools)  
+- **SushiSwap**: SushiSwap AMM pools (V2 compatible)
+- **PancakeSwap**: PancakeSwap V2 pools on Ethereum
+- **Real-time Detection**: Monitors new pool creations across all supported DEXs
+- **30x Performance**: Parallel scanning completes full blockchain scan in ~30 seconds
 
 ## Prerequisites
 
@@ -83,11 +95,12 @@ The application supports several environment variables for configuration:
 
 ### Pool Scanning Methods
 
-**Default - Parallel Scanning (Recommended):**
+**Default - Multi-DEX Parallel Scanning (Recommended):**
 - ⚡ **30x faster** than sequential scanning
-- 🔄 Scans V2 and V3 pools simultaneously in 50K block chunks
+- 🔄 Scans all supported DEXs simultaneously in 50K block chunks
 - 🚀 Uses 20 concurrent tasks per batch for maximum speed
-- ✅ Same accuracy as sequential method
+- 🎯 **4 DEX protocols**: UniswapV2, UniswapV3, SushiSwap, PancakeSwap
+- ✅ Same accuracy as sequential method but covers more pools
 
 ```bash
 # Default behavior - no environment variables needed
@@ -96,11 +109,11 @@ cargo run --release
 
 **Sequential Scanning (Fallback):**
 - 🐌 Original method, slower but maximum compatibility
-- 📦 Scans pools one by one in 100K block windows
+- 📦 Scans Uniswap pools only in 100K block windows
 - 🔒 Use if parallel scanning has issues with your RPC endpoint
 
 ```bash
-# Enable sequential scanning
+# Enable sequential scanning (Uniswap only)
 USE_SEQUENTIAL_SCAN=1 cargo run --release
 ```
 

@@ -163,6 +163,21 @@ impl PoolDatabase {
         Ok(count as u32)
     }
 
+    /// Get pool counts for all protocols
+    pub fn get_all_protocol_counts(&self) -> Result<Vec<(String, u32)>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT protocol, COUNT(*) FROM pools GROUP BY protocol ORDER BY protocol"
+        )?;
+        let results = stmt.query_map([], |row| {
+            let protocol: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((protocol, count as u32))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
     /// Clear all pools (useful for updates)
     pub fn clear_pools(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();

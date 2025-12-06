@@ -192,7 +192,7 @@ impl PoolFetcher {
                         tracing::debug!("Found {} PairCreated events in window {}", logs.len(), window_idx);
 
                         for log in logs {
-                            if let Ok(pool) = parse_v2_pair_created_log(&log) {
+                            if let Ok(pool) = parse_v2_pair_created_log(&log, "UniswapV2") {
                                 tracing::debug!("Found UniswapV2 pool: {}", pool.address);
                                 all_pools.push(pool);
                             }
@@ -227,16 +227,17 @@ impl PoolFetcher {
         Ok(all_pools.len() as u32)
     }
 
-    /// Parallel fetch method that scans V2 and V3 pools concurrently
-    /// Uses smaller chunk sizes and parallel processing for 7x speed improvement
+    /// Parallel fetch method that scans multiple DEX pools concurrently
+    /// Uses smaller chunk sizes and parallel processing for maximum speed
+    /// Now supports: UniswapV2, UniswapV3, SushiSwap, PancakeSwap
     pub async fn fetch_pools_parallel(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
         const CHUNK_SIZE: u64 = 50_000; // Smaller chunks for better parallelization
         const BATCH_SIZE: usize = 20; // Number of concurrent tasks per batch
         
-        tracing::info!("Starting parallel pool scanning with chunk size {} and batch size {}", CHUNK_SIZE, BATCH_SIZE);
+        tracing::info!("Starting parallel multi-DEX pool scanning with chunk size {} and batch size {}", CHUNK_SIZE, BATCH_SIZE);
         
         if let Some(ref cb) = progress {
-            cb.lock().unwrap()("Parallel scanning: Initializing...".to_string(), 0);
+            cb.lock().unwrap()("Multi-DEX scanning: Initializing...".to_string(), 0);
         }
 
         // Create provider
@@ -245,32 +246,48 @@ impl PoolFetcher {
         
         tracing::info!("Current block: {}", current_block);
         
-        // Define starting blocks for V2 and V3
-        const UNISWAP_V2_START_BLOCK: u64 = 10_000_835; // V2 deployment
-        const UNISWAP_V3_START_BLOCK: u64 = 12_369_739; // V3 deployment
+        // Define starting blocks for different protocols
+        const UNISWAP_V2_START_BLOCK: u64 = 10_000_835; // V2 deployment - May 2020
+        const UNISWAP_V3_START_BLOCK: u64 = 12_369_739; // V3 deployment - May 2021
+        const SUSHISWAP_START_BLOCK: u64 = 10_794_229;  // SushiSwap deployment - September 2020
+        const PANCAKESWAP_START_BLOCK: u64 = 15_614_590; // PancakeSwap V2 on Ethereum - December 2022
         
-        // Generate block ranges for parallel processing
-        let v2_ranges = generate_block_ranges(UNISWAP_V2_START_BLOCK, current_block, CHUNK_SIZE);
-        let v3_ranges = generate_block_ranges(UNISWAP_V3_START_BLOCK, current_block, CHUNK_SIZE);
+        // Generate block ranges for each DEX protocol
+        let uniswap_v2_ranges = generate_block_ranges(UNISWAP_V2_START_BLOCK, current_block, CHUNK_SIZE);
+        let uniswap_v3_ranges = generate_block_ranges(UNISWAP_V3_START_BLOCK, current_block, CHUNK_SIZE);
+        let sushiswap_ranges = generate_block_ranges(SUSHISWAP_START_BLOCK, current_block, CHUNK_SIZE);
+        let pancakeswap_ranges = generate_block_ranges(PANCAKESWAP_START_BLOCK, current_block, CHUNK_SIZE);
         
-        let total_ranges = v2_ranges.len() + v3_ranges.len();
+        let total_ranges = uniswap_v2_ranges.len() + uniswap_v3_ranges.len() + 
+                          sushiswap_ranges.len() + pancakeswap_ranges.len();
         let completed_ranges = Arc::new(AtomicU32::new(0));
         let total_pools_found = Arc::new(AtomicU32::new(0));
         
-        tracing::info!("Generated {} V2 ranges and {} V3 ranges ({} total)", 
-                      v2_ranges.len(), v3_ranges.len(), total_ranges);
+        tracing::info!("Generated ranges: UniV2={}, UniV3={}, Sushi={}, Pancake={} (total={})", 
+                      uniswap_v2_ranges.len(), uniswap_v3_ranges.len(), 
+                      sushiswap_ranges.len(), pancakeswap_ranges.len(), total_ranges);
         
         // Combine all ranges with their types for unified processing
         let mut all_tasks = Vec::new();
         
-        // Create V2 tasks
-        for (start, end) in v2_ranges {
-            all_tasks.push((start, end, "V2"));
+        // Create UniswapV2 tasks
+        for (start, end) in uniswap_v2_ranges {
+            all_tasks.push((start, end, "UniswapV2"));
         }
         
-        // Create V3 tasks  
-        for (start, end) in v3_ranges {
-            all_tasks.push((start, end, "V3"));
+        // Create UniswapV3 tasks  
+        for (start, end) in uniswap_v3_ranges {
+            all_tasks.push((start, end, "UniswapV3"));
+        }
+        
+        // Create SushiSwap tasks
+        for (start, end) in sushiswap_ranges {
+            all_tasks.push((start, end, "SushiSwap"));
+        }
+        
+        // Create PancakeSwap tasks
+        for (start, end) in pancakeswap_ranges {
+            all_tasks.push((start, end, "PancakeSwap"));
         }
         
         let mut all_pools = Vec::new();
@@ -279,24 +296,29 @@ impl PoolFetcher {
         for batch in all_tasks.chunks(BATCH_SIZE) {
             let mut batch_tasks = Vec::new();
             
-            for (start, end, pool_type) in batch {
+            for (start, end, dex_type) in batch {
                 let provider_clone = Arc::clone(&provider);
                 let completed_clone = Arc::clone(&completed_ranges);
                 let total_found_clone = Arc::clone(&total_pools_found);
                 let progress_clone = progress.clone();
                 let start = *start;
                 let end = *end;
-                let pool_type = *pool_type;
+                let dex_type = *dex_type;
                 
                 let task = tokio::spawn(async move {
-                    let result = if pool_type == "V2" {
-                        scan_v2_pools_range(provider_clone, start, end).await
-                    } else {
-                        scan_v3_pools_range(provider_clone, start, end).await
+                    let result = match dex_type {
+                        "UniswapV2" => scan_uniswap_v2_pools_range(provider_clone, start, end).await,
+                        "UniswapV3" => scan_uniswap_v3_pools_range(provider_clone, start, end).await,
+                        "SushiSwap" => scan_sushiswap_pools_range(provider_clone, start, end).await,
+                        "PancakeSwap" => scan_pancakeswap_pools_range(provider_clone, start, end).await,
+                        _ => {
+                            tracing::warn!("Unknown DEX type: {}", dex_type);
+                            Ok(Vec::new())
+                        }
                     };
                     
                     let pools = result.unwrap_or_else(|e| {
-                        tracing::warn!("Error scanning {} pools in range {}-{}: {}", pool_type, start, end, e);
+                        tracing::warn!("Error scanning {} pools in range {}-{}: {}", dex_type, start, end, e);
                         Vec::new()
                     });
                     
@@ -306,12 +328,12 @@ impl PoolFetcher {
                     // Update progress
                     if let Some(ref cb) = progress_clone {
                         let progress_pct = ((completed as f32 / total_ranges as f32) * 100.0) as u32;
-                        let msg = format!("Parallel: {}/{} ranges ({}%) - {} pools found", 
+                        let msg = format!("Multi-DEX: {}/{} ranges ({}%) - {} pools found", 
                                         completed, total_ranges, progress_pct, found);
                         cb.lock().unwrap()(msg, found);
                     }
                     
-                    tracing::debug!("Completed {} range {}-{}: {} pools", pool_type, start, end, pools.len());
+                    tracing::debug!("Completed {} range {}-{}: {} pools", dex_type, start, end, pools.len());
                     pools
                 });
                 
@@ -331,17 +353,17 @@ impl PoolFetcher {
         if !all_pools.is_empty() {
             tracing::info!("Adding {} pools to database", all_pools.len());
             if let Some(ref cb) = progress {
-                cb.lock().unwrap()(format!("Parallel: Saving {} pools to database...", all_pools.len()), 
+                cb.lock().unwrap()(format!("Multi-DEX: Saving {} pools to database...", all_pools.len()), 
                                  all_pools.len() as u32);
             }
             pool_db.add_pools(&all_pools)?;
         }
         
         let total_found = all_pools.len() as u32;
-        tracing::info!("Parallel pool scanning complete: {} pools found", total_found);
+        tracing::info!("Multi-DEX pool scanning complete: {} pools found", total_found);
         
         if let Some(ref cb) = progress {
-            cb.lock().unwrap()(format!("Parallel: Complete! {} pools found", total_found), total_found);
+            cb.lock().unwrap()(format!("Multi-DEX: Complete! {} pools found", total_found), total_found);
         }
         
         Ok(total_found)
@@ -388,9 +410,10 @@ fn parse_v3_pool_created_log(log: &alloy::rpc::types::eth::Log) -> Result<DexPoo
     }
 }
 
-/// Parse UniswapV2 PairCreated event using alloy
+/// Parse V2-style PairCreated event using alloy
 /// Event: PairCreated(address indexed token0, address indexed token1, address pair, uint)
-fn parse_v2_pair_created_log(log: &alloy::rpc::types::eth::Log) -> Result<DexPool> {
+/// Used by UniswapV2, SushiSwap, PancakeSwap
+fn parse_v2_pair_created_log(log: &alloy::rpc::types::eth::Log, protocol: &str) -> Result<DexPool> {
     // Topics: [hash, token0, token1]
     // Data: pair address, count
     
@@ -411,7 +434,7 @@ fn parse_v2_pair_created_log(log: &alloy::rpc::types::eth::Log) -> Result<DexPoo
 
     Ok(DexPool {
         address: format!("{:?}", pair_address),
-        protocol: "UniswapV2".to_string(),
+        protocol: protocol.to_string(),
         token0: Some(format!("{:?}", token0)),
         token1: Some(format!("{:?}", token1)),
         chain_id: 1,
@@ -432,8 +455,8 @@ fn generate_block_ranges(start_block: u64, end_block: u64, chunk_size: u64) -> V
     ranges
 }
 
-/// Scan a specific block range for V2 pools
-async fn scan_v2_pools_range(
+/// Scan a specific block range for UniswapV2 pools
+async fn scan_uniswap_v2_pools_range(
     provider: Arc<ReqwestProvider>, 
     from_block: u64, 
     to_block: u64
@@ -452,21 +475,21 @@ async fn scan_v2_pools_range(
     match provider.get_logs(&event_filter).await {
         Ok(logs) => {
             for log in logs {
-                if let Ok(pool) = parse_v2_pair_created_log(&log) {
+                if let Ok(pool) = parse_v2_pair_created_log(&log, "UniswapV2") {
                     pools.push(pool);
                 }
             }
         }
         Err(e) => {
-            return Err(anyhow::anyhow!("Failed to get V2 logs for range {}-{}: {}", from_block, to_block, e));
+            return Err(anyhow::anyhow!("Failed to get UniswapV2 logs for range {}-{}: {}", from_block, to_block, e));
         }
     }
     
     Ok(pools)
 }
 
-/// Scan a specific block range for V3 pools
-async fn scan_v3_pools_range(
+/// Scan a specific block range for UniswapV3 pools
+async fn scan_uniswap_v3_pools_range(
     provider: Arc<ReqwestProvider>, 
     from_block: u64, 
     to_block: u64
@@ -491,7 +514,73 @@ async fn scan_v3_pools_range(
             }
         }
         Err(e) => {
-            return Err(anyhow::anyhow!("Failed to get V3 logs for range {}-{}: {}", from_block, to_block, e));
+            return Err(anyhow::anyhow!("Failed to get UniswapV3 logs for range {}-{}: {}", from_block, to_block, e));
+        }
+    }
+    
+    Ok(pools)
+}
+
+/// Scan a specific block range for SushiSwap pools
+async fn scan_sushiswap_pools_range(
+    provider: Arc<ReqwestProvider>, 
+    from_block: u64, 
+    to_block: u64
+) -> Result<Vec<DexPool>> {
+    const SUSHISWAP_FACTORY: &str = "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac";
+    
+    let factory_addr = Address::from_str(SUSHISWAP_FACTORY)?;
+    let event_filter = Filter::new()
+        .from_block(from_block)
+        .to_block(to_block)
+        .address(vec![factory_addr])
+        .event("PairCreated(address,address,address,uint256)");
+    
+    let mut pools = Vec::new();
+    
+    match provider.get_logs(&event_filter).await {
+        Ok(logs) => {
+            for log in logs {
+                if let Ok(pool) = parse_v2_pair_created_log(&log, "SushiSwap") {
+                    pools.push(pool);
+                }
+            }
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to get SushiSwap logs for range {}-{}: {}", from_block, to_block, e));
+        }
+    }
+    
+    Ok(pools)
+}
+
+/// Scan a specific block range for PancakeSwap pools
+async fn scan_pancakeswap_pools_range(
+    provider: Arc<ReqwestProvider>, 
+    from_block: u64, 
+    to_block: u64
+) -> Result<Vec<DexPool>> {
+    const PANCAKESWAP_FACTORY: &str = "0x1097053Fd2ea711dad45caCcc45EfF7548fCB362";
+    
+    let factory_addr = Address::from_str(PANCAKESWAP_FACTORY)?;
+    let event_filter = Filter::new()
+        .from_block(from_block)
+        .to_block(to_block)
+        .address(vec![factory_addr])
+        .event("PairCreated(address,address,address,uint256)");
+    
+    let mut pools = Vec::new();
+    
+    match provider.get_logs(&event_filter).await {
+        Ok(logs) => {
+            for log in logs {
+                if let Ok(pool) = parse_v2_pair_created_log(&log, "PancakeSwap") {
+                    pools.push(pool);
+                }
+            }
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!("Failed to get PancakeSwap logs for range {}-{}: {}", from_block, to_block, e));
         }
     }
     
