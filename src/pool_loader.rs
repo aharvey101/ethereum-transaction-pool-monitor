@@ -1,7 +1,8 @@
 use anyhow::Result;
-use crate::pool_fetcher::PoolFetcher;
+use crate::pool_fetcher::{PoolFetcher, ProgressCallback};
 use crate::pool_db::PoolDatabase;
 use tokio::sync::mpsc;
+use std::sync::Arc;
 
 /// Messages sent from the background pool loader to the main app
 #[derive(Clone, Debug)]
@@ -50,9 +51,16 @@ impl BackgroundPoolLoader {
         let pool_db = PoolDatabase::new(db_path)?;
         let pool_fetcher = PoolFetcher::new(rpc_url);
 
-        // Check if we should force a complete pool refresh
+        // Check scanning method - parallel is now the default!
+        let use_sequential = std::env::var("USE_SEQUENTIAL_SCAN").is_ok();
         let force_refresh = std::env::var("FORCE_POOL_REFRESH").is_ok();
         let existing_pool_count = pool_db.pool_count().unwrap_or(0);
+        
+        if use_sequential {
+            tracing::info!("Sequential scanning enabled - using original pool fetching");
+        } else {
+            tracing::info!("Parallel scanning enabled (default) - using enhanced pool fetching");
+        }
         
         if !force_refresh && existing_pool_count >= 1000 {
             tracing::info!("Sufficient pools already in database ({}), skipping pool loading", existing_pool_count);
@@ -73,65 +81,124 @@ impl BackgroundPoolLoader {
         let mut v2_count = 0;
         let mut v3_count = 0;
 
-        // Send initial progress
-        let _ = tx.send(PoolLoaderMessage::Progress(
-            "UniswapV2: Initializing...".to_string(),
-            0,
-            0,
-            0,
-        ));
+        if use_sequential {
+            // Use the original sequential scanning method
+            tracing::info!("Background loader: Using sequential pool scanning");
+            
+            // Send initial progress
+            let _ = tx.send(PoolLoaderMessage::Progress(
+                "UniswapV2: Initializing...".to_string(),
+                0,
+                0,
+                0,
+            ));
 
-        // Fetch V2 pools
-        tracing::info!("Background loader: Fetching UniswapV2 pools");
-        match pool_fetcher.fetch_uniswap_v2_pools(&pool_db, chain_id).await {
-            Ok(count) => {
-                tracing::info!("Background loader: Found {} V2 pools", count);
-                v2_count = count;
-                let _ = tx.send(PoolLoaderMessage::Progress(
-                    format!("UniswapV2: Complete! {} pools found", count),
-                    v2_count,
-                    v3_count,
-                    33, // Arbitrary progress point for V2 completion
-                ));
+            // Fetch V2 pools
+            tracing::info!("Background loader: Fetching UniswapV2 pools");
+            match pool_fetcher.fetch_uniswap_v2_pools(&pool_db, chain_id).await {
+                Ok(count) => {
+                    tracing::info!("Background loader: Found {} V2 pools", count);
+                    v2_count = count;
+                    let _ = tx.send(PoolLoaderMessage::Progress(
+                        format!("UniswapV2: Complete! {} pools found", count),
+                        v2_count,
+                        v3_count,
+                        33, // Arbitrary progress point for V2 completion
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!("Background loader: Failed to fetch V2 pools: {}", e);
+                    let _ = tx.send(PoolLoaderMessage::Error(format!(
+                        "Failed to fetch V2 pools: {}",
+                        e
+                    )));
+                    return Ok(());
+                }
             }
-            Err(e) => {
-                tracing::warn!("Background loader: Failed to fetch V2 pools: {}", e);
-                let _ = tx.send(PoolLoaderMessage::Error(format!(
-                    "Failed to fetch V2 pools: {}",
-                    e
-                )));
-                return Ok(());
-            }
-        }
 
-        // Send V3 progress
-        let _ = tx.send(PoolLoaderMessage::Progress(
-            "UniswapV3: Initializing...".to_string(),
-            v2_count,
-            v3_count,
-            33,
-        ));
+            // Send V3 progress
+            let _ = tx.send(PoolLoaderMessage::Progress(
+                "UniswapV3: Initializing...".to_string(),
+                v2_count,
+                v3_count,
+                33,
+            ));
 
-        // Fetch V3 pools
-        tracing::info!("Background loader: Fetching UniswapV3 pools");
-        match pool_fetcher.fetch_uniswap_v3_pools(&pool_db, chain_id).await {
-            Ok(count) => {
-                tracing::info!("Background loader: Found {} V3 pools", count);
-                v3_count = count;
-                let _ = tx.send(PoolLoaderMessage::Progress(
-                    format!("UniswapV3: Complete! {} pools found", count),
-                    v2_count,
-                    v3_count,
-                    66, // Arbitrary progress point for V3 completion
-                ));
+            // Fetch V3 pools
+            tracing::info!("Background loader: Fetching UniswapV3 pools");
+            match pool_fetcher.fetch_uniswap_v3_pools(&pool_db, chain_id).await {
+                Ok(count) => {
+                    tracing::info!("Background loader: Found {} V3 pools", count);
+                    v3_count = count;
+                    let _ = tx.send(PoolLoaderMessage::Progress(
+                        format!("UniswapV3: Complete! {} pools found", count),
+                        v2_count,
+                        v3_count,
+                        66, // Arbitrary progress point for V3 completion
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!("Background loader: Failed to fetch V3 pools: {}", e);
+                    let _ = tx.send(PoolLoaderMessage::Error(format!(
+                        "Failed to fetch V3 pools: {}",
+                        e
+                    )));
+                    return Ok(());
+                }
             }
-            Err(e) => {
-                tracing::warn!("Background loader: Failed to fetch V3 pools: {}", e);
-                let _ = tx.send(PoolLoaderMessage::Error(format!(
-                    "Failed to fetch V3 pools: {}",
-                    e
-                )));
-                return Ok(());
+        } else {
+            // Use the new parallel scanning method (DEFAULT)
+            tracing::info!("Background loader: Starting parallel pool scanning (default)");
+            let _ = tx.send(PoolLoaderMessage::Progress(
+                "Parallel scanning: Initializing...".to_string(),
+                0,
+                0,
+                0,
+            ));
+
+            // Create progress callback for parallel scanning
+            let progress_callback: Option<ProgressCallback> = {
+                let tx_clone = tx.clone();
+                Some(Arc::new(std::sync::Mutex::new(Box::new(
+                    move |msg: String, pools_found: u32| {
+                        let _ = tx_clone.send(PoolLoaderMessage::Progress(
+                            msg,
+                            pools_found / 2, // Rough estimate for V2
+                            pools_found / 2, // Rough estimate for V3
+                            50, // Progress percentage
+                        ));
+                    },
+                ))))
+            };
+
+            match pool_fetcher.fetch_pools_parallel(&pool_db, chain_id, progress_callback).await {
+                Ok(total_count) => {
+                    tracing::info!("Background loader: Parallel scanning found {} total pools", total_count);
+                    
+                    // Get the actual counts from the database by protocol
+                    if let Ok(v2_db_count) = pool_db.get_pool_count_by_protocol("UniswapV2") {
+                        v2_count = v2_db_count;
+                    }
+                    if let Ok(v3_db_count) = pool_db.get_pool_count_by_protocol("UniswapV3") {
+                        v3_count = v3_db_count;
+                    }
+
+                    let _ = tx.send(PoolLoaderMessage::Progress(
+                        format!("Parallel scanning complete! {} total pools found (V2: {}, V3: {})", 
+                               total_count, v2_count, v3_count),
+                        v2_count,
+                        v3_count,
+                        90,
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!("Background loader: Parallel scanning failed: {}", e);
+                    let _ = tx.send(PoolLoaderMessage::Error(format!(
+                        "Parallel scanning failed: {}",
+                        e
+                    )));
+                    return Ok(());
+                }
             }
         }
 

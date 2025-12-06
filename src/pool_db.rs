@@ -152,6 +152,17 @@ impl PoolDatabase {
         Ok(count as u32)
     }
 
+    /// Count pools by protocol
+    pub fn get_pool_count_by_protocol(&self, protocol: &str) -> Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pools WHERE protocol = ?1",
+            params![protocol],
+            |row| row.get(0),
+        )?;
+        Ok(count as u32)
+    }
+
     /// Clear all pools (useful for updates)
     pub fn clear_pools(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();

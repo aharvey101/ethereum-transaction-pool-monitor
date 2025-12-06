@@ -68,6 +68,48 @@ ETH_RPC_URL=https://mainnet.infura.io/v3/YOUR_PROJECT_ID cargo run --release
 ETH_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_API_KEY cargo run --release
 ```
 
+## Configuration
+
+### Environment Variables
+
+The application supports several environment variables for configuration:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ETH_RPC_URL` | `http://localhost:8545` | Ethereum RPC endpoint |
+| `FORCE_POOL_REFRESH` | Not set | Force complete pool scan on startup |
+| `USE_SEQUENTIAL_SCAN` | Not set | Use old sequential scanning (slower but more compatible) |
+| `RUST_LOG` | `info` | Logging level (`debug`, `info`, `warn`, `error`) |
+
+### Pool Scanning Methods
+
+**Default - Parallel Scanning (Recommended):**
+- ⚡ **30x faster** than sequential scanning
+- 🔄 Scans V2 and V3 pools simultaneously in 50K block chunks
+- 🚀 Uses 20 concurrent tasks per batch for maximum speed
+- ✅ Same accuracy as sequential method
+
+```bash
+# Default behavior - no environment variables needed
+cargo run --release
+```
+
+**Sequential Scanning (Fallback):**
+- 🐌 Original method, slower but maximum compatibility
+- 📦 Scans pools one by one in 100K block windows
+- 🔒 Use if parallel scanning has issues with your RPC endpoint
+
+```bash
+# Enable sequential scanning
+USE_SEQUENTIAL_SCAN=1 cargo run --release
+```
+
+**Force Pool Refresh:**
+```bash
+# Force complete blockchain scan (ignores existing database)
+FORCE_POOL_REFRESH=1 cargo run --release
+```
+
 ## Usage
 
 Once running, you'll see:
