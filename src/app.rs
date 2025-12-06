@@ -52,10 +52,10 @@ impl SortField {
 
     pub fn label(&self) -> &'static str {
         match self {
-            SortField::Default => "Default",
-            SortField::GasPrice => "Gas Price",
-            SortField::Value => "Value",
-            SortField::Nonce => "Nonce",
+            SortField::Default => "Default Order",
+            SortField::GasPrice => "Gas Price (High→Low)",
+            SortField::Value => "Value (High→Low)",
+            SortField::Nonce => "Nonce (Low→High)",
         }
     }
 }
