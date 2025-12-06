@@ -195,7 +195,9 @@ async fn run_app(
             if !pool_loading_started {
                 pool_loading_started = true;
                 tracing::info!("Starting pool sync in background");
+                app.needs_redraw = true; // Force redraw before blocking
                 let _ = app.sync_pools_from_node().await;
+                app.needs_redraw = true; // Force redraw after blocking
             } else {
                 // Then, update transactions regularly
                 let _ = app.update_transactions().await;
