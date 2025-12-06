@@ -83,13 +83,19 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
     for (i, tx) in transactions.iter().enumerate() {
         let is_selected = app.selected_index == app.scroll_offset + i;
         
-        // Simplified styling - only apply when needed
+        // Style based on selection and DeFi activity type
         let style = if is_selected {
             Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
-        } else if tx.is_dex {
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
+            // Different colors for different DeFi activity types
+            use crate::eth_client::DefiActivityType;
+            match tx.defi_activity_type {
+                DefiActivityType::Stablecoin => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                DefiActivityType::TokenContract => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                DefiActivityType::DexPool => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                DefiActivityType::DexRouter => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                DefiActivityType::None => Style::default(),
+            }
         };
 
         // Avoid string allocation for common case
@@ -212,7 +218,8 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DeFi/All) | s: Sort  | q: Quit  | Green = DeFi transactions";
+    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DeFi/All) | s: Sort  | q: Quit";
+    let color_legend = "Colors: Blue=Stablecoin | Yellow=Token | Green=DEX Pool | Cyan=DEX Router";
     let status = &app.status;
     let filter_status = format!("Filter: {} | Sort: {} | TX Count: {}", 
         match app.filter_mode {
@@ -224,13 +231,15 @@ fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
     );
 
     let footer = ratatui::widgets::Paragraph::new(
-        Line::from(vec![
-            Span::raw(help_text),
-            Span::raw("\n"),
-            Span::styled(&filter_status, Style::default().fg(Color::Yellow)),
-            Span::raw(" | "),
-            Span::styled(status, Style::default().fg(Color::Cyan)),
-        ])
+        vec![
+            Line::from(vec![Span::raw(help_text)]),
+            Line::from(vec![Span::styled(color_legend, Style::default().fg(Color::Gray))]),
+            Line::from(vec![
+                Span::styled(&filter_status, Style::default().fg(Color::Yellow)),
+                Span::raw(" | "),
+                Span::styled(status, Style::default().fg(Color::Cyan)),
+            ]),
+        ]
     )
     .block(Block::default().borders(Borders::TOP))
     .alignment(Alignment::Left);

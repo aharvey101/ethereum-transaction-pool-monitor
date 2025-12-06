@@ -1,7 +1,17 @@
 use anyhow::Result;
-use serde_json::json;
-use std::sync::Arc;
 use crate::pool_db::PoolDatabase;
+use serde_json::{self, json};
+use std::sync::Arc;
+
+/// Type of DeFi activity detected in a transaction
+#[derive(Clone, Debug, PartialEq)]
+pub enum DefiActivityType {
+    None,
+    TokenContract,      // USDT, USDC, WETH, etc.
+    Stablecoin,        // USDT, USDC, DAI, BUSD - subset of tokens
+    DexPool,           // Uniswap pools, etc.
+    DexRouter,         // Uniswap router, 1inch, etc.
+}
 
 /// Represents a pending transaction from the mempool
 #[derive(Clone, Debug)]
@@ -32,6 +42,7 @@ pub struct MempoolTransaction {
     pub value_f64: f64,
     pub gas_price_f64: f64,
     pub is_dex: bool,
+    pub defi_activity_type: DefiActivityType,
 }
 
 impl MempoolTransaction {
@@ -52,13 +63,14 @@ impl MempoolTransaction {
         let value_f64 = value_eth.parse::<f64>().unwrap_or(0.0);
         let gas_price_f64 = gas_price_gwei.parse::<f64>().unwrap_or(0.0);
         
-        // Check if the "to" address is DeFi-related (pools, routers, or major tokens)
-        let is_dex = to_opt.as_ref().map_or(false, |addr| {
-            let result = pool_db.is_defi_related(addr, chain_id).unwrap_or(false);
-            if result {
-                tracing::debug!("DeFi transaction detected - Address: {}, Value: {}, Gas: {}", addr, value_eth, gas_price_gwei);
+        // Determine DeFi activity type and set is_dex flag
+        let (is_dex, defi_activity_type) = to_opt.as_ref().map_or((false, DefiActivityType::None), |addr| {
+            let activity_type = pool_db.get_defi_activity_type(addr, chain_id).unwrap_or(DefiActivityType::None);
+            let is_defi = activity_type != DefiActivityType::None;
+            if is_defi {
+                tracing::debug!("DeFi transaction detected - Address: {}, Type: {:?}, Value: {}, Gas: {}", addr, activity_type, value_eth, gas_price_gwei);
             }
-            result
+            (is_defi, activity_type)
         });
 
         Ok(MempoolTransaction {
@@ -78,6 +90,7 @@ impl MempoolTransaction {
             value_f64,
             gas_price_f64,
             is_dex,
+            defi_activity_type,
         })
     }
 }

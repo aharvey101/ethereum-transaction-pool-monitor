@@ -110,6 +110,24 @@ impl PoolDatabase {
         routers.contains(&normalized.as_str())
     }
 
+    /// Check if an address is a stablecoin contract (subset of tokens)
+    pub fn is_stablecoin(&self, address: &str) -> bool {
+        let normalized = address.to_lowercase();
+        
+        let stablecoins = [
+            "0xdac17f958d2ee523a2206206994597c13d831ec7", // USDT
+            "0xa0b86991c431c8ba3b80e36c4b5f6b4b3c4f6e5d", // USDC
+            "0x6b175474e89094c44da98b954eedeac495271d0f", // DAI
+            "0x4fabb145d64652a948d72533023f6e7a623c7c53", // BUSD
+            "0x853d955acef822db058eb8505911ed77f175b99e", // FRAX
+            "0x5f98805a4e8be255a32880fdec7f6728c6568ba0", // LUSD
+            "0x57ab1ec28d129707052df4df418d58a2d46d5f51", // sYNTH sUSD
+            "0x0000000000085d4780b73119b644ae5ecd22b376", // TUSD
+        ];
+
+        stablecoins.contains(&normalized.as_str())
+    }
+
     /// Check if an address is a major token contract (fast in-memory lookup)
     pub fn is_token_contract(&self, address: &str) -> bool {
         let normalized = address.to_lowercase();
@@ -179,6 +197,39 @@ impl PoolDatabase {
             |row| row.get(0),
         )?;
         Ok(result)
+    }
+
+    /// Determine the specific type of DeFi activity for an address
+    pub fn get_defi_activity_type(&self, address: &str, chain_id: u32) -> Result<crate::eth_client::DefiActivityType> {
+        use crate::eth_client::DefiActivityType;
+        
+        // Check in priority order (most specific first)
+        if self.is_stablecoin(address) {
+            return Ok(DefiActivityType::Stablecoin);
+        }
+        
+        if self.is_dex_router(address) {
+            return Ok(DefiActivityType::DexRouter);
+        }
+        
+        if self.is_token_contract(address) {
+            return Ok(DefiActivityType::TokenContract);
+        }
+        
+        // Check if it's a pool (database lookup)
+        let normalized = address.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let is_pool: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pools WHERE LOWER(address) = ?1 AND chain_id = ?2)",
+            params![&normalized, chain_id],
+            |row| row.get(0),
+        )?;
+        
+        if is_pool {
+            return Ok(DefiActivityType::DexPool);
+        }
+        
+        Ok(DefiActivityType::None)
     }
 
     /// Get pool details by address
