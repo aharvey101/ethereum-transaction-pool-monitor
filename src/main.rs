@@ -110,7 +110,7 @@ async fn run_tui() {
 
     // Spawn background pool loader
     tracing::info!("Spawning background pool loader task");
-    let (_loader, mut pool_loader_rx) = BackgroundPoolLoader::spawn(
+    let (_loader, pool_loader_rx) = BackgroundPoolLoader::spawn(
         rpc_url.clone(),
         db_path.to_string(),
         chain_id,
@@ -141,8 +141,10 @@ async fn run_app(
     // Initial update
     let _ = app.update_transactions().await;
 
-    let mut last_update = std::time::Instant::now();
-    const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+    let _last_update = std::time::Instant::now();
+    let mut last_tx_update = std::time::Instant::now();
+    const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100); // Fast polling for responsiveness
+    const TX_UPDATE_INTERVAL: Duration = Duration::from_secs(5); // Update transactions every 5 seconds
 
     loop {
         // Get terminal size for dynamic row calculation
@@ -187,16 +189,19 @@ async fn run_app(
             app.needs_redraw = false;
         }
 
-        // Check if it's time for periodic updates (5 seconds)
+        // Check if it's time for periodic transaction updates (5 seconds)
         let now = std::time::Instant::now();
-        let time_until_update = if now.duration_since(last_update) >= UPDATE_INTERVAL {
+        let time_until_tx_update = if now.duration_since(last_tx_update) >= TX_UPDATE_INTERVAL {
             Duration::from_millis(0)
         } else {
-            UPDATE_INTERVAL - now.duration_since(last_update)
+            TX_UPDATE_INTERVAL - now.duration_since(last_tx_update)
         };
 
+        // Poll for input with shorter timeout for responsiveness
+        let time_until_input = INPUT_POLL_INTERVAL.min(time_until_tx_update);
+
         // Handle input with timeout
-        if crossterm::event::poll(time_until_update)? {
+        if crossterm::event::poll(time_until_input)? {
             match event::read()? {
                 Event::Key(key) => {
                     match key.code {
@@ -232,9 +237,9 @@ async fn run_app(
                 }
                 _ => {}
             }
-        } else {
-            // Timeout expired, time for periodic update
-            last_update = std::time::Instant::now();
+        } else if now.duration_since(last_tx_update) >= TX_UPDATE_INTERVAL {
+            // Timeout expired, time for periodic transaction update
+            last_tx_update = std::time::Instant::now();
             let _ = app.update_transactions().await;
         }
     }
