@@ -149,7 +149,6 @@ impl AppState {
             match self.pool_db.seed_known_dexes(self.chain_id) {
                 Ok(count) => {
                     tracing::info!("Seeded {} known DEX addresses", count);
-                    total += count as u32;
                 }
                 Err(e) => {
                     tracing::error!("Failed to seed known DEX addresses: {}", e);

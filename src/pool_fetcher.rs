@@ -19,10 +19,10 @@ impl PoolFetcher {
     }
 
     /// Fetch UniswapV3 pools from node by querying PoolCreated events
-    /// Uses a rolling window from recent blocks backwards
-    /// UniswapV3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea3113F
+    /// Fetches pools from the last RECENT_BLOCK_WINDOW blocks for fast startup
+    /// UniswapV3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea313100
     pub async fn fetch_uniswap_v3_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
-        const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea3113F";
+        const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea313100";
         const BLOCK_WINDOW: u64 = 5000;
         const MAX_WINDOWS: u64 = 40;
 
@@ -50,14 +50,21 @@ impl PoolFetcher {
             tracing::debug!("Fetching UniswapV3 window {} (blocks {}-{})", window_idx, from_block, to_block);
 
             let factory_addr = Address::from_str(UNISWAP_V3_FACTORY)?;
+            tracing::debug!("Factory address parsed: {:?}", factory_addr);
+            
+            tracing::debug!("Creating V3 filter with event signature: 'PoolCreated(address,address,uint24,int24,address)'");
             let event_filter = Filter::new()
                 .from_block(from_block)
                 .to_block(to_block)
                 .address(vec![factory_addr])
                 .event("PoolCreated(address,address,uint24,int24,address)");
 
+            tracing::debug!("V3 filter created successfully");
+            tracing::debug!("Calling provider.get_logs()...");
+
             match provider.get_logs(&event_filter).await {
                 Ok(logs) => {
+                    tracing::debug!("V3 get_logs succeeded: {} logs found", logs.len());
                     if !logs.is_empty() {
                         tracing::debug!("Found {} PoolCreated events in window {}", logs.len(), window_idx);
 
@@ -71,6 +78,10 @@ impl PoolFetcher {
                 }
                 Err(e) => {
                     tracing::warn!("Error querying V3 logs in window {}: {}", window_idx, e);
+                    // Log the error with more details
+                    tracing::warn!("Error details: {:?}", e);
+                    // Don't return immediately - continue with next window
+                    // The error might be from unconfirmed blocks or other temporary issues
                 }
             }
 
@@ -82,6 +93,7 @@ impl PoolFetcher {
             pool_db.add_pools(&all_pools)?;
         }
 
+        tracing::info!("UniswapV3 pool fetch complete: {} pools found", all_pools.len());
         Ok(all_pools.len() as u32)
     }
 
@@ -170,7 +182,11 @@ fn parse_v3_pool_created_log(log: &alloy::rpc::types::eth::Log) -> Result<DexPoo
     let token1 = Address::from_slice(token1_bytes);
     
     // Decode log data: (int24 tickSpacing, address pool)
-    match SolValue::abi_decode(&log.inner.data.data, false) {
+    // Try to decode with proper error handling
+    let data = &log.inner.data.data;
+    tracing::debug!("V3 log data length: {}, data: {:?}", data.len(), hex::encode(data));
+    
+    match SolValue::abi_decode(data, false) {
         Ok(decoded) => {
             let (_, pool_address): (i32, Address) = decoded;
             Ok(DexPool {
@@ -182,7 +198,7 @@ fn parse_v3_pool_created_log(log: &alloy::rpc::types::eth::Log) -> Result<DexPoo
             })
         }
         Err(e) => {
-            tracing::trace!("Failed to decode V3 pool data: {}", e);
+            tracing::debug!("Failed to decode V3 pool data: {}. Data length: {}", e, data.len());
             Err(anyhow::anyhow!("Failed to decode V3 pool: {}", e))
         }
     }
