@@ -5,8 +5,10 @@ mod dex;
 mod pool_db;
 mod coingecko;
 mod pool_fetcher;
+mod pool_loader;
 
 use app::AppState;
+use pool_loader::BackgroundPoolLoader;
 use crossterm::{
     event::{self, DisableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
@@ -106,8 +108,18 @@ async fn run_tui() {
     // Pool loading is very slow and blocks the TUI
     tracing::info!("Application started with {} pools in database", app.pool_count);
 
+    // Spawn background pool loader
+    tracing::info!("Spawning background pool loader task");
+    let (_loader, mut pool_loader_rx) = BackgroundPoolLoader::spawn(
+        rpc_url.clone(),
+        db_path.to_string(),
+        chain_id,
+    );
+    app.is_loading_pools = true;
+    app.pools_loading_progress = "Pool scan starting...".to_string();
+
     // Run the main loop
-    let _ = run_app(&mut terminal, &mut app).await;
+    let _ = run_app(&mut terminal, &mut app, pool_loader_rx).await;
 
     // Restore terminal
     let _ = disable_raw_mode();
@@ -122,7 +134,10 @@ async fn run_tui() {
 async fn run_app(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut AppState,
+    mut pool_loader_rx: tokio::sync::mpsc::UnboundedReceiver<pool_loader::PoolLoaderMessage>,
 ) -> io::Result<()> {
+    use pool_loader::PoolLoaderMessage;
+    
     // Initial update
     let _ = app.update_transactions().await;
 
@@ -133,6 +148,32 @@ async fn run_app(
         // Get terminal size for dynamic row calculation
         let terminal_height = terminal.size()?.height as usize;
         let available_rows = terminal_height.saturating_sub(7); // 3 for header, 3 for footer, 1 margin
+
+        // Check for pool loader messages (non-blocking)
+        while let Ok(msg) = pool_loader_rx.try_recv() {
+            match msg {
+                PoolLoaderMessage::Progress(progress_msg, count) => {
+                    app.pools_loading_progress = format!("{} - {} pools found", progress_msg, count);
+                    app.pools_found_count = count;
+                    app.needs_redraw = true;
+                    tracing::debug!("Pool loader progress: {}", progress_msg);
+                }
+                PoolLoaderMessage::Complete(final_count) => {
+                    app.pool_count = final_count;
+                    app.pools_found_count = final_count;
+                    app.is_loading_pools = false;
+                    app.pools_loading_progress = format!("Loaded {} pools", final_count);
+                    app.needs_redraw = true;
+                    tracing::info!("Pool loader complete: {} pools found", final_count);
+                }
+                PoolLoaderMessage::Error(err) => {
+                    app.is_loading_pools = false;
+                    app.pools_loading_progress = format!("Error: {}", err);
+                    app.needs_redraw = true;
+                    tracing::error!("Pool loader error: {}", err);
+                }
+            }
+        }
 
         // Only redraw if something changed
         if app.needs_redraw {
