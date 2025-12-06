@@ -35,6 +35,10 @@ async fn main() -> Result<()> {
     println!("• UniswapV3 pools (from block 12,369,739)");  
     println!("• SushiSwap pools (from block 10,794,229)");
     println!("• PancakeSwap pools (from block 15,614,590)");
+    println!("• ShibaSwap pools (from block 12,771,744)");
+    println!("• FraxSwap pools (from block 15,463,108)");
+    println!("• Curve Stableswap-NG pools (from block 17,000,000)");
+    println!("• Curve Twocrypto-NG pools (from block 18,000,000)");
     println!();
     
     // Run parallel multi-DEX scan

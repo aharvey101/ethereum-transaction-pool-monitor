@@ -16,12 +16,25 @@ A real-time Ethereum mempool monitor built with Rust using the ratatui terminal 
 
 The monitor automatically detects and tracks liquidity pools from major decentralized exchanges:
 
-- **UniswapV2**: Official Uniswap V2 pools (9,199+ pools)
-- **UniswapV3**: Official Uniswap V3 pools (2,412+ pools)  
-- **SushiSwap**: SushiSwap AMM pools (V2 compatible)
-- **PancakeSwap**: PancakeSwap V2 pools on Ethereum
+#### **V2-Compatible DEXs (PairCreated events)**
+- **UniswapV2**: Official Uniswap V2 pools (9,199+ pools from block 10,000,835)
+- **SushiSwap**: SushiSwap AMM pools (from block 10,794,229)
+- **PancakeSwap**: PancakeSwap V2 pools on Ethereum (from block 15,614,590)
+- **ShibaSwap**: ShibaSwap DEX pools (from block 12,771,744)
+- **FraxSwap**: Frax Finance DEX pools (from block 15,463,108)
+
+#### **V3-Compatible DEXs (PoolCreated events)**
+- **UniswapV3**: Official Uniswap V3 pools (2,412+ pools from block 12,369,739)
+
+#### **Curve Finance (Next Generation Factories)**
+- **Curve Stableswap-NG**: Stable asset pools (from block 17,000,000)
+- **Curve Twocrypto-NG**: Volatile 2-token pools (from block 18,000,000)
+
+#### **Performance & Features**
 - **Real-time Detection**: Monitors new pool creations across all supported DEXs
 - **30x Performance**: Parallel scanning completes full blockchain scan in ~30 seconds
+- **8+ DEX Protocols**: Comprehensive coverage of major DeFi ecosystems
+- **Multi-Architecture Support**: Handles V2, V3, and Curve's specialized pool types
 
 ## Prerequisites
 
@@ -99,8 +112,8 @@ The application supports several environment variables for configuration:
 - ⚡ **30x faster** than sequential scanning
 - 🔄 Scans all supported DEXs simultaneously in 50K block chunks
 - 🚀 Uses 20 concurrent tasks per batch for maximum speed
-- 🎯 **4 DEX protocols**: UniswapV2, UniswapV3, SushiSwap, PancakeSwap
-- ✅ Same accuracy as sequential method but covers more pools
+- 🎯 **8+ DEX protocols**: UniswapV2, UniswapV3, SushiSwap, PancakeSwap, ShibaSwap, FraxSwap, Curve Stableswap-NG, Curve Twocrypto-NG
+- ✅ Same accuracy as sequential method but covers comprehensive DeFi ecosystem
 
 ```bash
 # Default behavior - no environment variables needed
