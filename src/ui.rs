@@ -67,7 +67,12 @@ fn draw_header(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
 fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
     // Calculate how many rows can fit (subtract 3 for header, borders, etc)
     let available_rows = area.height.saturating_sub(3) as usize;
-    let transactions = app.get_visible_transactions(available_rows);
+    let filtered_txs = app.get_filtered_transactions();
+    let transactions = filtered_txs
+        .into_iter()
+        .skip(app.scroll_offset)
+        .take(available_rows)
+        .collect::<Vec<_>>();
 
     let rows: Vec<Row> = transactions
         .iter()
@@ -218,13 +223,19 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    let help_text = "↑/↓ or Mouse Scroll: Navigate  | q: Quit  | Green = DEX transactions";
+    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DEX/All)  | q: Quit  | Green = DEX transactions";
     let status = &app.status;
+    let filter_status = format!("Filter: {} | TX Count: {}", 
+        app.filter_mode.label(), 
+        app.get_filtered_transaction_count()
+    );
 
     let footer = ratatui::widgets::Paragraph::new(
         Line::from(vec![
             Span::raw(help_text),
             Span::raw("\n"),
+            Span::styled(&filter_status, Style::default().fg(Color::Yellow)),
+            Span::raw(" | "),
             Span::styled(status, Style::default().fg(Color::Cyan)),
         ])
     )
