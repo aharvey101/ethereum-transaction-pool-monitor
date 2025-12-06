@@ -212,12 +212,15 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DEX/All) | s: Sort | r: Refresh Pools | q: Quit  | Green = DEX transactions";
+    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DeFi/All) | s: Sort  | q: Quit  | Green = DeFi transactions";
     let status = &app.status;
     let filter_status = format!("Filter: {} | Sort: {} | TX Count: {}", 
-        app.filter_mode.label(),
+        match app.filter_mode {
+            crate::app::FilterMode::All => "All Transactions",
+            crate::app::FilterMode::DexOnly => "DeFi Only",
+        },
         app.sort_field.label(),
-        app.cached_filtered_count_display
+        app.get_filtered_transaction_count_display()
     );
 
     let footer = ratatui::widgets::Paragraph::new(

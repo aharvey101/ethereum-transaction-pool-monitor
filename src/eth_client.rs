@@ -52,11 +52,11 @@ impl MempoolTransaction {
         let value_f64 = value_eth.parse::<f64>().unwrap_or(0.0);
         let gas_price_f64 = gas_price_gwei.parse::<f64>().unwrap_or(0.0);
         
-        // Check if the "to" address is a known DEX pool from database
+        // Check if the "to" address is DeFi-related (pools, routers, or major tokens)
         let is_dex = to_opt.as_ref().map_or(false, |addr| {
-            let result = pool_db.is_dex_pool(addr, chain_id).unwrap_or(false);
+            let result = pool_db.is_defi_related(addr, chain_id).unwrap_or(false);
             if result {
-                tracing::debug!("DEX pool detected - Address: {}, Value: {}, Gas: {}", addr, value_eth, gas_price_gwei);
+                tracing::debug!("DeFi transaction detected - Address: {}, Value: {}, Gas: {}", addr, value_eth, gas_price_gwei);
             }
             result
         });

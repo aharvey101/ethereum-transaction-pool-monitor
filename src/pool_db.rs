@@ -110,6 +110,77 @@ impl PoolDatabase {
         routers.contains(&normalized.as_str())
     }
 
+    /// Check if an address is a major token contract (fast in-memory lookup)
+    pub fn is_token_contract(&self, address: &str) -> bool {
+        let normalized = address.to_lowercase();
+        
+        // Major token contracts on Ethereum mainnet
+        let tokens = [
+            // Stablecoins
+            "0xdac17f958d2ee523a2206206994597c13d831ec7", // USDT
+            "0xa0b86991c431c8ba3b80e36c4b5f6b4b3c4f6e5d", // USDC
+            "0x6b175474e89094c44da98b954eedeac495271d0f", // DAI
+            "0x4fabb145d64652a948d72533023f6e7a623c7c53", // BUSD
+            "0x853d955acef822db058eb8505911ed77f175b99e", // FRAX
+            "0x5f98805a4e8be255a32880fdec7f6728c6568ba0", // LUSD
+            "0x57ab1ec28d129707052df4df418d58a2d46d5f51", // sYNTH sUSD
+            "0x0000000000085d4780b73119b644ae5ecd22b376", // TUSD
+            
+            // Wrapped ETH
+            "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", // WETH
+            
+            // Major ERC-20 tokens
+            "0x1f9840a85d5af5bf1d1762f925bdaddc4201f984", // UNI
+            "0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0", // MATIC
+            "0x6b3595068778dd592e39a122f4f5a5cf09c90fe2", // SUSHI
+            "0xc00e94cb662c3520282e6f5717214004a7f26888", // COMP
+            "0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2", // MKR
+            "0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9", // AAVE
+            "0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f", // SNX
+            "0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e", // YFI
+            "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", // WBTC
+            "0x514910771af9ca656af840dff83e8264ecf986ca", // LINK
+            "0xa693b19d2931d498c5b318df961919bb4aee87a5", // UST
+            "0x4e3fbd56cd56c3e72c1403e103b45db9da5b9d2b", // CVX
+            "0x6dea81c8171d0ba574754ef6f8b412f2ed88c54d", // LQTY
+            
+            // Liquid staking tokens
+            "0xae7ab96520de3a18e5e111b5eaab095312d7fe84", // stETH (Lido)
+            "0xbe9895146f7af43049ca1c1ae358b0541ea49704", // cbETH (Coinbase)
+            "0xa2e3356610840701bdf5611a53974510ae27e2e1", // wBETH (Binance)
+            
+            // Meme tokens (popular for trading)
+            "0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce", // SHIB
+            "0x4d224452801aced8b2f0aebe155379bb5d594381", // APE
+            "0xa0246c9032bc3a600820415ae600c6388619a14d", // FARM
+        ];
+
+        tokens.contains(&normalized.as_str())
+    }
+
+    /// Check if an address is any DeFi-related contract (pools, routers, tokens)
+    pub fn is_defi_related(&self, address: &str, chain_id: u32) -> Result<bool> {
+        // Check token contracts first (fastest)
+        if self.is_token_contract(address) {
+            return Ok(true);
+        }
+        
+        // Then check routers (fast in-memory)
+        if self.is_dex_router(address) {
+            return Ok(true);
+        }
+        
+        // Finally check pool database
+        let normalized = address.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let result: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pools WHERE LOWER(address) = ?1 AND chain_id = ?2)",
+            params![&normalized, chain_id],
+            |row| row.get(0),
+        )?;
+        Ok(result)
+    }
+
     /// Get pool details by address
     #[allow(dead_code)]
     pub fn get_pool(&self, address: &str, chain_id: u32) -> Result<Option<DexPool>> {

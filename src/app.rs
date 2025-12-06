@@ -26,7 +26,7 @@ impl FilterMode {
     pub fn label(&self) -> &'static str {
         match self {
             FilterMode::All => "All Transactions",
-            FilterMode::DexOnly => "DEX Only",
+            FilterMode::DexOnly => "DeFi Only",
         }
     }
 }
@@ -378,6 +378,11 @@ impl AppState {
     pub fn get_filtered_transaction_count(&mut self) -> usize {
         self.ensure_cache_valid();
         self.cached_filtered_count
+    }
+
+    /// Get the count of transactions that match current filter (immutable, for UI)
+    pub fn get_filtered_transaction_count_display(&self) -> usize {
+        self.cached_filtered_count_display
     }
 
     /// Build and cache filtered/sorted transaction indices if needed
