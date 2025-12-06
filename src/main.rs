@@ -102,10 +102,9 @@ async fn run_tui() {
         }
     };
 
-    // Start pool sync in background (will display progress in TUI)
-    tracing::info!("Starting DEX pool sync in background");
-    app.is_loading_pools = true;
-    app.pools_loading_progress = "Initializing pool scan...".to_string();
+    // Don't load pools on startup - they're loaded from database if available
+    // Pool loading is very slow and blocks the TUI
+    tracing::info!("Application started with {} pools in database", app.pool_count);
 
     // Run the main loop
     let _ = run_app(&mut terminal, &mut app).await;
@@ -128,7 +127,6 @@ async fn run_app(
     let _ = app.update_transactions().await;
 
     let mut last_update = std::time::Instant::now();
-    let mut pool_loading_started = false;
     const UPDATE_INTERVAL: Duration = Duration::from_secs(5);
 
     loop {
@@ -190,18 +188,7 @@ async fn run_app(
         } else {
             // Timeout expired, time for periodic update
             last_update = std::time::Instant::now();
-            
-            // First, load pools if not started yet
-            if !pool_loading_started {
-                pool_loading_started = true;
-                tracing::info!("Starting pool sync in background");
-                app.needs_redraw = true; // Force redraw before blocking
-                let _ = app.sync_pools_from_node().await;
-                app.needs_redraw = true; // Force redraw after blocking
-            } else {
-                // Then, update transactions regularly
-                let _ = app.update_transactions().await;
-            }
+            let _ = app.update_transactions().await;
         }
     }
 
