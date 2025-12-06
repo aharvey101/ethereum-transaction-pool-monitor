@@ -156,11 +156,6 @@ impl AppState {
         }
     }
 
-    /// Get the currently selected transaction
-    pub fn get_selected_transaction(&self) -> Option<&MempoolTransaction> {
-        self.transactions.get(self.selected_index)
-    }
-
     /// Get visible transactions for rendering (fits available terminal height)
     pub fn get_visible_transactions(&self, max_rows: usize) -> Vec<&MempoolTransaction> {
         self.transactions

@@ -1,29 +1,38 @@
 use anyhow::Result;
-use ethers::prelude::*;
 use serde_json::json;
 use std::sync::Arc;
+use crate::pool_db::PoolDatabase;
 
 /// Represents a pending transaction from the mempool
 #[derive(Clone, Debug)]
 pub struct MempoolTransaction {
+    #[allow(dead_code)]
     pub hash: String,
     pub from: String,
     pub to: Option<String>,
+    #[allow(dead_code)]
     pub value: String,
+    #[allow(dead_code)]
     pub gas: String,
+    #[allow(dead_code)]
     pub gas_price: String,
     pub nonce: u64,
+    #[allow(dead_code)]
     pub data: String,
+    #[allow(dead_code)]
     pub block_hash: Option<String>,
+    #[allow(dead_code)]
     pub block_number: Option<String>,
+    #[allow(dead_code)]
     pub transaction_index: Option<String>,
     // Cached formatted values for UI rendering
     pub value_eth: String,
     pub gas_price_gwei: String,
+    pub is_dex: bool,
 }
 
 impl MempoolTransaction {
-    pub fn from_value(value: &serde_json::Value) -> Result<Self> {
+    pub fn from_value(value: &serde_json::Value, pool_db: &PoolDatabase, chain_id: u32) -> Result<Self> {
         let from = value["from"].as_str().unwrap_or("N/A").to_string();
         let to_opt = value["to"].as_str().map(|s| s.to_string());
         let value_hex = value["value"].as_str().unwrap_or("0x0").to_string();
@@ -35,6 +44,11 @@ impl MempoolTransaction {
 
         let value_eth = format_value(&value_hex);
         let gas_price_gwei = format_gas_price(&gas_price_hex);
+        
+        // Check if the "to" address is a known DEX pool from database
+        let is_dex = to_opt.as_ref().map_or(false, |addr| {
+            pool_db.is_dex_pool(addr, chain_id).unwrap_or(false)
+        });
 
         Ok(MempoolTransaction {
             hash: value["hash"].as_str().unwrap_or("N/A").to_string(),
@@ -50,6 +64,7 @@ impl MempoolTransaction {
             transaction_index: value["transactionIndex"].as_str().map(|s| s.to_string()),
             value_eth,
             gas_price_gwei,
+            is_dex,
         })
     }
 }
@@ -61,15 +76,6 @@ fn parse_hex_u64(hex: &str) -> Result<u64> {
         return Ok(0);
     }
     u64::from_str_radix(trimmed, 16).map_err(|e| anyhow::anyhow!("Failed to parse hex: {}", e))
-}
-
-/// Format address to shortened version
-fn format_address(addr: &str) -> String {
-    if addr.len() > 10 {
-        format!("{}...", &addr[..10])
-    } else {
-        addr.to_string()
-    }
 }
 
 /// Format value in Wei to ETH representation
@@ -105,25 +111,22 @@ fn format_gas_price(gas_price_hex: &str) -> String {
 /// Ethereum client for connecting to a local node
 pub struct EthereumClient {
     rpc_url: String,
-    provider: Arc<Provider<Http>>,
     http_client: Arc<reqwest::Client>,
 }
 
 impl EthereumClient {
     /// Create a new Ethereum client connected to the specified RPC URL
     pub async fn new(rpc_url: &str) -> Result<Self> {
-        let provider = Provider::<Http>::try_from(rpc_url)?;
         Ok(EthereumClient {
             rpc_url: rpc_url.to_string(),
-            provider: Arc::new(provider),
             http_client: Arc::new(reqwest::Client::new()),
         })
     }
 
     /// Fetch pending transactions - tries txpool_content first, then filter-based approach
-    pub async fn get_pending_transactions(&self) -> Result<Vec<MempoolTransaction>> {
+    pub async fn get_pending_transactions(&self, pool_db: &PoolDatabase, chain_id: u32) -> Result<Vec<MempoolTransaction>> {
         // Try txpool_content first (works with Reth, Geth, Erigon)
-        match self.get_pending_from_txpool().await {
+        match self.get_pending_from_txpool(pool_db, chain_id).await {
             Ok(txs) => {
                 if !txs.is_empty() {
                     return Ok(txs);
@@ -135,11 +138,11 @@ impl EthereumClient {
         }
 
         // Fallback to filter-based approach
-        self.get_pending_from_filter().await
+        self.get_pending_from_filter(pool_db, chain_id).await
     }
 
     /// Get pending transactions from txpool_content (most direct method)
-    async fn get_pending_from_txpool(&self) -> Result<Vec<MempoolTransaction>> {
+    async fn get_pending_from_txpool(&self, pool_db: &PoolDatabase, chain_id: u32) -> Result<Vec<MempoolTransaction>> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "txpool_content",
@@ -174,7 +177,7 @@ impl EthereumClient {
             for (_address, nonce_map) in pending_map {
                 if let Some(txs_by_nonce) = nonce_map.as_object() {
                     for (_nonce, tx) in txs_by_nonce {
-                        if let Ok(tx_data) = MempoolTransaction::from_value(tx) {
+                        if let Ok(tx_data) = MempoolTransaction::from_value(tx, pool_db, chain_id) {
                             transactions.push(tx_data);
                         }
                     }
@@ -186,7 +189,7 @@ impl EthereumClient {
     }
 
     /// Fallback: Get pending transactions using filter-based approach
-    async fn get_pending_from_filter(&self) -> Result<Vec<MempoolTransaction>> {
+    async fn get_pending_from_filter(&self, pool_db: &PoolDatabase, chain_id: u32) -> Result<Vec<MempoolTransaction>> {
         // Create filter
         let filter_request = json!({
             "jsonrpc": "2.0",
@@ -243,7 +246,7 @@ impl EthereumClient {
         // Fetch full transaction details for each hash
         let mut transactions = Vec::new();
         for hash in hashes {
-            match self.get_transaction_by_hash(&hash).await {
+            match self.get_transaction_by_hash(&hash, pool_db, chain_id).await {
                 Ok(tx) => transactions.push(tx),
                 Err(_) => {
                     // Skip individual transaction errors
@@ -255,7 +258,7 @@ impl EthereumClient {
     }
 
     /// Fetch full transaction details by hash
-    async fn get_transaction_by_hash(&self, hash: &str) -> Result<MempoolTransaction> {
+    async fn get_transaction_by_hash(&self, hash: &str, pool_db: &PoolDatabase, chain_id: u32) -> Result<MempoolTransaction> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionByHash",
@@ -279,24 +282,6 @@ impl EthereumClient {
             .get("result")
             .ok_or_else(|| anyhow::anyhow!("Transaction not found"))?;
 
-        MempoolTransaction::from_value(result)
-    }
-
-    /// Get the current block number
-    pub async fn get_block_number(&self) -> Result<u64> {
-        Ok(self.provider.get_block_number().await?.as_u64())
-    }
-
-    /// Get gas price
-    pub async fn get_gas_price(&self) -> Result<U256> {
-        Ok(self.provider.get_gas_price().await?)
-    }
-
-    /// Check if the connection is alive
-    pub async fn health_check(&self) -> Result<bool> {
-        match self.provider.get_block_number().await {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        MempoolTransaction::from_value(result, pool_db, chain_id)
     }
 }
