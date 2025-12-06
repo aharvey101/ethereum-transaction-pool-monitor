@@ -50,7 +50,7 @@ fn draw_header(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
             Span::raw(" | "),
             Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
             Span::raw(" | "),
-            Span::raw(format!("Last Update: {}", app.last_update)),
+            Span::raw(format!("TX: {}  | Pools: {} | Sync: {}", app.last_update, app.pool_count, app.last_pool_sync)),
         ])
     )
     .block(Block::default().borders(Borders::BOTTOM).style(Style::default().bg(Color::Black)))
@@ -69,10 +69,17 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
         .enumerate()
         .map(|(i, tx)| {
             let is_selected = app.selected_index == app.scroll_offset + i;
+            
+            // Style based on selection and DEX status
             let style = if is_selected {
                 Style::default()
                     .bg(Color::DarkGray)
                     .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else if tx.is_dex {
+                // Highlight DEX transactions in green
+                Style::default()
+                    .fg(Color::Green)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -124,7 +131,7 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    let help_text = "↑/↓: Navigate  | q: Quit  | Scroll through pending transactions";
+    let help_text = "↑/↓ or Mouse Scroll: Navigate  | q: Quit  | Green = DEX transactions";
     let status = &app.status;
 
     let footer = ratatui::widgets::Paragraph::new(

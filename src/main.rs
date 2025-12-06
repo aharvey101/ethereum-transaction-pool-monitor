@@ -7,16 +7,54 @@ mod coingecko;
 
 use app::AppState;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseEventKind},
+    event::{self, DisableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
+use tracing_subscriber::layer::SubscriberExt;
 
 #[tokio::main]
 async fn main() {
+    // Setup logging
+    setup_logging();
+
+    // Check for debug mode
+    let debug_mode = std::env::var("DEBUG_MODE").is_ok();
+    
+    if debug_mode {
+        tracing::info!("Running in DEBUG mode (headless)");
+        run_headless().await;
+    } else {
+        run_tui().await;
+    }
+}
+
+/// Setup logging to both file and stdout
+fn setup_logging() {
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::sync::Arc::new(
+            std::fs::File::create("ethereum-monitor.log").unwrap_or_else(|_| {
+                eprintln!("Warning: Could not create log file");
+                std::fs::File::open("/dev/null").unwrap()
+            })
+        ))
+        .with_target(true)
+        .with_level(true);
+    
+    let subscriber = tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
+        .with(file_layer);
+    
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Failed to set global default subscriber");
+}
+
+/// Run the TUI application
+async fn run_tui() {
     // Setup terminal
     if let Err(e) = enable_raw_mode() {
         eprintln!("Failed to enable raw mode: {}", e);
@@ -24,7 +62,7 @@ async fn main() {
     }
 
     let mut stdout = io::stdout();
-    if let Err(e) = execute!(stdout, EnterAlternateScreen, EnableMouseCapture) {
+    if let Err(e) = execute!(stdout, crossterm::terminal::EnterAlternateScreen, DisableMouseCapture) {
         eprintln!("Failed to setup terminal: {}", e);
         return;
     }
@@ -154,4 +192,69 @@ async fn run_app(
     }
 
     Ok(())
+}
+
+/// Run in headless mode (no TUI, just logging)
+async fn run_headless() {
+    // Get RPC URL from environment or use default
+    let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://192.168.0.14:8545".to_string());
+    
+    // Database path and chain ID
+    let db_path = "dex_pools.db";
+    let chain_id = 1u32;
+
+    tracing::info!("Initializing Ethereum mempool monitor");
+    tracing::info!("RPC URL: {}", rpc_url);
+    tracing::info!("Database: {}", db_path);
+    
+    // Create app state
+    let mut app = match AppState::new(&rpc_url, db_path, chain_id).await {
+        Ok(app) => {
+            tracing::info!("Application initialized successfully");
+            app
+        }
+        Err(e) => {
+            tracing::error!("Failed to initialize application: {}", e);
+            return;
+        }
+    };
+
+    // Sync DEX pools
+    tracing::info!("Syncing DEX pools from CoinGecko");
+    if let Err(e) = app.sync_dex_pools().await {
+        tracing::error!("Failed to sync DEX pools: {}", e);
+    } else {
+        tracing::info!("DEX pools synced. Count: {}", app.pool_count);
+    }
+
+    // Run update loop
+    let mut update_count = 0;
+    loop {
+        update_count += 1;
+        tracing::info!("Transaction update #{}", update_count);
+        
+        if let Err(e) = app.update_transactions().await {
+            tracing::error!("Failed to fetch transactions: {}", e);
+        } else {
+            tracing::info!("Fetched {} pending transactions", app.transactions.len());
+            
+            // Log DEX transactions
+            let dex_count = app.transactions.iter().filter(|tx| tx.is_dex).count();
+            tracing::info!("DEX transactions: {}", dex_count);
+            
+            // Log details of DEX transactions
+            for tx in app.transactions.iter().filter(|tx| tx.is_dex) {
+                tracing::info!(
+                    "DEX TX - From: {} | To: {} | Value: {} | Gas: {}",
+                    &tx.from[..std::cmp::min(10, tx.from.len())],
+                    &tx.to.as_ref().map(|a| &a[..std::cmp::min(10, a.len())]).unwrap_or(&"N/A"),
+                    tx.value_eth,
+                    tx.gas_price_gwei
+                );
+            }
+        }
+
+        // Wait 5 seconds before next update
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
 }
