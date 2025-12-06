@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crate::pool_db::PoolDatabase;
+use crate::transaction_decoder::SwapInfo;
 use serde_json::{self, json};
 use std::sync::Arc;
 
@@ -43,6 +44,7 @@ pub struct MempoolTransaction {
     pub gas_price_f64: f64,
     pub is_dex: bool,
     pub defi_activity_type: DefiActivityType,
+    pub swap_info: Option<SwapInfo>,
 }
 
 impl MempoolTransaction {
@@ -72,6 +74,21 @@ impl MempoolTransaction {
             }
             (is_defi, activity_type)
         });
+        
+        // Extract transaction data for potential decoding
+        let tx_data = value["input"].as_str().unwrap_or("0x").to_string();
+        
+        // Decode transaction if it's a DeFi transaction
+        let swap_info = if is_dex {
+            if let Some(to_addr) = &to_opt {
+                let decoder = crate::transaction_decoder::TransactionDecoder::new();
+                decoder.decode_swap(to_addr, &tx_data)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         Ok(MempoolTransaction {
             hash: value["hash"].as_str().unwrap_or("N/A").to_string(),
@@ -81,7 +98,7 @@ impl MempoolTransaction {
             gas: value["gas"].as_str().unwrap_or("0x0").to_string(),
             gas_price: gas_price_hex,
             nonce,
-            data: value["input"].as_str().unwrap_or("0x").to_string(),
+            data: tx_data,
             block_hash: value["blockHash"].as_str().map(|s| s.to_string()),
             block_number: value["blockNumber"].as_str().map(|s| s.to_string()),
             transaction_index: value["transactionIndex"].as_str().map(|s| s.to_string()),
@@ -91,6 +108,7 @@ impl MempoolTransaction {
             gas_price_f64,
             is_dex,
             defi_activity_type,
+            swap_info,
         })
     }
 }

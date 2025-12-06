@@ -7,6 +7,7 @@ mod coingecko;
 mod pool_fetcher;
 mod pool_loader;
 mod transaction_updater;
+mod transaction_decoder;
 
 use app::AppState;
 use pool_loader::BackgroundPoolLoader;

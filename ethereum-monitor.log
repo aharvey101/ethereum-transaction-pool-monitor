@@ -1,73 +1,45 @@
-[2m2025-12-06T14:06:44.449218Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Application started with 12147 pools in database
-[2m2025-12-06T14:06:44.449260Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Spawning background transaction updater task
-[2m2025-12-06T14:06:44.449295Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Background transaction updater spawned successfully
-[2m2025-12-06T14:06:44.449298Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Spawning background pool loader task
-[2m2025-12-06T14:06:44.449330Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background transaction updater: Initializing...
-[2m2025-12-06T14:06:44.449338Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m RPC URL: http://192.168.0.14:8545
-[2m2025-12-06T14:06:44.449371Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m DB Path: dex_pools.db
-[2m2025-12-06T14:06:44.449374Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Chain ID: 1
-[2m2025-12-06T14:06:44.449375Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Creating EthereumClient...
-[2m2025-12-06T14:06:44.449381Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m EthereumClient created successfully
-[2m2025-12-06T14:06:44.449383Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Creating PoolDatabase...
-[2m2025-12-06T14:06:44.449569Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m PoolDatabase created successfully
-[2m2025-12-06T14:06:44.449573Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background transaction updater started successfully
-[2m2025-12-06T14:06:44.449597Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_loader[0m[2m:[0m Parallel scanning enabled (default) - using enhanced pool fetching
-[2m2025-12-06T14:06:44.449605Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_loader[0m[2m:[0m Sufficient pools already in database (12147), skipping pool loading
-[2m2025-12-06T14:06:44.449608Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_loader[0m[2m:[0m Use FORCE_POOL_REFRESH=1 to force a complete refresh
-[2m2025-12-06T14:06:44.551558Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Pool loader complete: V2=0 V3=0 Total=12147
-[2m2025-12-06T14:06:55.038853Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:06:55.050386Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:06:55.050397Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:06:55.051780Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:07:10.523436Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:07:10.558296Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:07:10.558305Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:07:10.559504Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:07:25.939372Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:07:26.018520Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:07:26.018557Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:07:26.020044Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:07:41.222638Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:07:41.262691Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:07:41.262709Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:07:41.263937Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:07:57.345871Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:07:57.412177Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:07:57.412192Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:07:57.413710Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:08:13.013310Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:08:13.058962Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:08:13.058995Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:08:13.060293Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:08:28.603099Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:08:28.603204Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:08:28.603215Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:08:28.604554Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:08:43.988741Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:08:44.043992Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:08:44.044026Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:08:44.045402Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:08:59.686757Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:08:59.689621Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:08:59.689639Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:08:59.690840Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:09:15.703231Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:09:15.739170Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:09:15.739193Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:09:15.740547Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:09:31.611730Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:09:31.687360Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:09:31.687388Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:09:31.688809Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:09:47.647273Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:09:47.739767Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:09:47.739788Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:09:47.741469Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:10:04.152068Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:10:04.195159Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:10:04.195174Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:10:04.196492Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
-[2m2025-12-06T14:10:20.621909Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
-[2m2025-12-06T14:10:20.652113Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
-[2m2025-12-06T14:10:20.652150Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
-[2m2025-12-06T14:10:20.653514Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:20:06.286742Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Application started with 12147 pools in database
+[2m2025-12-06T14:20:06.286771Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Spawning background transaction updater task
+[2m2025-12-06T14:20:06.286791Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Background transaction updater spawned successfully
+[2m2025-12-06T14:20:06.286794Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Spawning background pool loader task
+[2m2025-12-06T14:20:06.286827Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background transaction updater: Initializing...
+[2m2025-12-06T14:20:06.286834Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m RPC URL: http://192.168.0.14:8545
+[2m2025-12-06T14:20:06.286856Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m DB Path: dex_pools.db
+[2m2025-12-06T14:20:06.286858Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Chain ID: 1
+[2m2025-12-06T14:20:06.286859Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Creating EthereumClient...
+[2m2025-12-06T14:20:06.286865Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m EthereumClient created successfully
+[2m2025-12-06T14:20:06.286867Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Creating PoolDatabase...
+[2m2025-12-06T14:20:06.287080Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m PoolDatabase created successfully
+[2m2025-12-06T14:20:06.287084Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background transaction updater started successfully
+[2m2025-12-06T14:20:06.287140Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_loader[0m[2m:[0m Parallel scanning enabled (default) - using enhanced pool fetching
+[2m2025-12-06T14:20:06.287148Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_loader[0m[2m:[0m Sufficient pools already in database (12147), skipping pool loading
+[2m2025-12-06T14:20:06.287151Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::pool_loader[0m[2m:[0m Use FORCE_POOL_REFRESH=1 to force a complete refresh
+[2m2025-12-06T14:20:06.388525Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Pool loader complete: V2=0 V3=0 Total=12147
+[2m2025-12-06T14:20:17.779389Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:20:17.784454Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:20:17.784468Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:20:17.785700Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:20:34.216174Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:20:34.240562Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:20:34.240591Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:20:34.241488Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:20:50.844739Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:20:50.850327Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:20:50.850343Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:20:50.851324Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:21:07.465089Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:21:07.498800Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:21:07.498818Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:21:07.499909Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:21:23.857605Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:21:23.944821Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:21:23.944841Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:21:23.945876Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:21:39.842449Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:21:39.893923Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:21:39.893949Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:21:39.895116Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found
+[2m2025-12-06T14:21:56.124455Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor::transaction_updater[0m[2m:[0m Background: Got 10000 pending transactions
+[2m2025-12-06T14:21:56.138394Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received transaction update message
+[2m2025-12-06T14:21:56.138422Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Received 10000 transactions from background
+[2m2025-12-06T14:21:56.139491Z[0m [32m INFO[0m [2methereum_transaction_pool_monitor[0m[2m:[0m Main: Updated app status to: 1000 pending transactions found

@@ -98,13 +98,17 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
             }
         };
 
-        // Avoid string allocation for common case
-        let to_display = tx.to.as_deref().unwrap_or("Contract Creation");
+        // Display decoded swap info or regular "to" address
+        let to_display = if let Some(swap_info) = &tx.swap_info {
+            format!("{}: {} → {}", swap_info.function_name, swap_info.token_in, swap_info.token_out)
+        } else {
+            tx.to.as_deref().unwrap_or("Contract Creation").to_string()
+        };
 
         // Create row - balance performance with lifetime requirements
         rows.push(Row::new(vec![
             tx.from.clone(), // Clone needed for owned string
-            to_display.to_string(), // Clone needed for owned string
+            to_display, // Already owned string
             tx.value_eth.clone(), // Clone needed for owned string 
             tx.gas_price_gwei.clone(), // Clone needed for owned string
             tx.nonce.to_string(), // Convert to owned string
@@ -122,7 +126,7 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
         ],
     )
     .header(
-        Row::new(vec!["From", "To", "Value", "Gas Price", "Nonce"])
+        Row::new(vec!["From", "To / Swap Info", "Value", "Gas Price", "Nonce"])
             .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
     )
     .block(
