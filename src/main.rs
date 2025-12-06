@@ -209,6 +209,10 @@ async fn run_app(
                             app.is_running = false;
                             break;
                         }
+                        KeyCode::Char('f') => {
+                            // Toggle filter between All and DEX only
+                            app.toggle_filter();
+                        }
                         KeyCode::Up => {
                             app.select_previous(available_rows);
                         }

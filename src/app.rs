@@ -8,6 +8,29 @@ use chrono::Local;
 
 const MAX_TRANSACTIONS_DISPLAY: usize = 1000;
 
+/// Filter mode for transaction display
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FilterMode {
+    All,
+    DexOnly,
+}
+
+impl FilterMode {
+    pub fn toggle(self) -> Self {
+        match self {
+            FilterMode::All => FilterMode::DexOnly,
+            FilterMode::DexOnly => FilterMode::All,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            FilterMode::All => "All Transactions",
+            FilterMode::DexOnly => "DEX Only",
+        }
+    }
+}
+
 /// Application state containing transaction data and UI state
 pub struct AppState {
     pub transactions: VecDeque<MempoolTransaction>,
@@ -31,6 +54,7 @@ pub struct AppState {
     pub v2_pools_found: u32,
     pub v3_pools_found: u32,
     pub pool_loading_progress_percent: u32,
+    pub filter_mode: FilterMode,
 }
 
 impl AppState {
@@ -64,6 +88,7 @@ impl AppState {
             v2_pools_found: 0,
             v3_pools_found: 0,
             pool_loading_progress_percent: 0,
+            filter_mode: FilterMode::All,
         })
     }
 
@@ -205,7 +230,8 @@ impl AppState {
 
     /// Scroll down in the transaction list
     pub fn scroll_down(&mut self, amount: usize, max_rows: usize) {
-        let max_scroll = self.transactions.len().saturating_sub(max_rows);
+        let filtered_count = self.get_filtered_transaction_count();
+        let max_scroll = filtered_count.saturating_sub(max_rows);
         self.scroll_offset = (self.scroll_offset + amount).min(max_scroll);
         self.needs_redraw = true;
     }
@@ -218,8 +244,9 @@ impl AppState {
 
     /// Select next transaction and auto-scroll to keep it visible
     pub fn select_next(&mut self, max_rows: usize) {
-        if !self.transactions.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.transactions.len();
+        let filtered_count = self.get_filtered_transaction_count();
+        if filtered_count > 0 {
+            self.selected_index = (self.selected_index + 1) % filtered_count;
             self.ensure_selection_visible(max_rows);
             self.needs_redraw = true;
         }
@@ -227,9 +254,10 @@ impl AppState {
 
     /// Select previous transaction and auto-scroll to keep it visible
     pub fn select_previous(&mut self, max_rows: usize) {
-        if !self.transactions.is_empty() {
+        let filtered_count = self.get_filtered_transaction_count();
+        if filtered_count > 0 {
             self.selected_index = if self.selected_index == 0 {
-                self.transactions.len() - 1
+                filtered_count - 1
             } else {
                 self.selected_index - 1
             };
@@ -260,5 +288,43 @@ impl AppState {
             .skip(self.scroll_offset)
             .take(max_rows)
             .collect()
+    }
+
+    /// Get filtered transactions based on current filter mode
+    pub fn get_filtered_transactions(&self) -> Vec<&MempoolTransaction> {
+        match self.filter_mode {
+            FilterMode::All => self.transactions.iter().collect(),
+            FilterMode::DexOnly => {
+                self.transactions
+                    .iter()
+                    .filter(|tx| tx.is_dex)
+                    .collect()
+            }
+        }
+    }
+
+    /// Get filtered and visible transactions for rendering
+    pub fn get_filtered_visible_transactions(&self, max_rows: usize) -> Vec<&MempoolTransaction> {
+        self.get_filtered_transactions()
+            .into_iter()
+            .skip(self.scroll_offset)
+            .take(max_rows)
+            .collect()
+    }
+
+    /// Toggle the filter mode between All and DexOnly
+    pub fn toggle_filter(&mut self) {
+        self.filter_mode = self.filter_mode.toggle();
+        self.selected_index = 0;
+        self.scroll_offset = 0;
+        self.needs_redraw = true;
+    }
+
+    /// Get the count of transactions that match current filter
+    pub fn get_filtered_transaction_count(&self) -> usize {
+        match self.filter_mode {
+            FilterMode::All => self.transactions.len(),
+            FilterMode::DexOnly => self.transactions.iter().filter(|tx| tx.is_dex).count(),
+        }
     }
 }
