@@ -47,13 +47,7 @@ async fn main() -> Result<()> {
     println!("\n📊 Multi-DEX Scan Results");
     println!("=========================");
     
-    // Get counts by protocol
-    let protocol_counts = pool_db.get_all_protocol_counts()?;
-    
-    for (protocol, count) in &protocol_counts {
-        println!("🔹 {}: {} pools", protocol, count);
-    }
-    
+    // Get total count
     println!("🔹 Total: {} pools", total_pools);
     
     // Compare to previous results

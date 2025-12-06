@@ -240,6 +240,7 @@ fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
         match app.filter_mode {
             crate::app::FilterMode::All => "All Transactions",
             crate::app::FilterMode::DexOnly => "DeFi Only",
+            crate::app::FilterMode::TransfersSwapsOnly => "Transfers/Swaps Only",
         },
         app.sort_field.label(),
         app.get_filtered_transaction_count_display()

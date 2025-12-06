@@ -27,22 +27,13 @@ async fn main() -> Result<()> {
     let client = EthereumClient::new(&rpc_url).await?;
     
     // Check pool counts in database
-    let protocol_counts = pool_db.get_all_protocol_counts()?;
-    println!("\n📊 Pools in Database:");
-    let mut total_pools = 0;
-    for (protocol, count) in &protocol_counts {
-        println!("• {}: {} pools", protocol, count);
-        total_pools += count;
-    }
+    let total_pools = pool_db.pool_count()?;
+    println!("\n📊 Pools in Database: {} total", total_pools);
     println!("• Total: {} pools", total_pools);
     
     // Get some sample pool addresses for testing
     println!("\n🎯 Sample Pool Addresses:");
-    let sample_pools = pool_db.get_sample_pools(5)?;
-    for pool in &sample_pools {
-        println!("• {} ({})", pool.address, pool.protocol);
-    }
-    
+        
     // Test router detection function directly
     println!("\n🔧 Testing Router Detection Logic:");
     let test_routers = [
@@ -61,15 +52,8 @@ async fn main() -> Result<()> {
     // Test combined detection (router + pool)
     println!("\n🔗 Testing Combined Detection (Routers + Pools):");
     for router in &test_routers {
-        let is_detected = pool_db.is_dex_pool(router, 1)?;
+        let is_detected = pool_db.is_dex_router(router);
         println!("• {} -> {}", router, if is_detected { "✅ DEX" } else { "❌ NOT DEX" });
-    }
-    
-    // Test pool detection on actual pools
-    println!("\n🧪 Testing Pool Detection Logic:");
-    for pool in &sample_pools {
-        let is_detected = pool_db.is_dex_pool(&pool.address, 1)?;
-        println!("• {} -> {}", pool.address, if is_detected { "✅ DEX" } else { "❌ NOT DEX" });
     }
     
     // Get pending transactions
@@ -125,7 +109,8 @@ async fn main() -> Result<()> {
                     
                     // Test if this address would be detected as DEX
                     if let Some(to) = &tx.to {
-                        let is_pool = pool_db.is_dex_pool(to, 1)?;
+                        let activity_type = pool_db.get_defi_activity_type(to, 1)?;
+                        let is_pool = !matches!(activity_type, ethereum_transaction_pool_monitor::eth_client::DefiActivityType::None);
                         if is_pool {
                             println!("  └─ ⚠️ This IS a pool but tx.is_dex = false!");
                         }
@@ -141,7 +126,8 @@ async fn main() -> Result<()> {
             for tx in transactions.iter().take(1000) { // Limit to first 1000 for speed
                 checked += 1;
                 if let Some(to_addr) = &tx.to {
-                    if pool_db.is_dex_pool(to_addr, 1)? {
+                    let activity_type = pool_db.get_defi_activity_type(to_addr, 1)?;
+                    if !matches!(activity_type, ethereum_transaction_pool_monitor::eth_client::DefiActivityType::None) {
                         found_matches += 1;
                         if found_matches <= 3 { // Show first 3 matches
                             println!("• Match found: {} -> Pool", to_addr);

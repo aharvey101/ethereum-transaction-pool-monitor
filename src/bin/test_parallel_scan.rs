@@ -3,7 +3,6 @@
 use anyhow::Result;
 use ethereum_transaction_pool_monitor::{pool_fetcher::PoolFetcher, pool_db::PoolDatabase};
 use std::time::Instant;
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {

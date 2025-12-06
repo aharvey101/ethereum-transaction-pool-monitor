@@ -1,6 +1,5 @@
 use crate::eth_client::{EthereumClient, MempoolTransaction};
 use crate::pool_db::PoolDatabase;
-use crate::coingecko::CoinGeckoClient;
 use crate::pool_fetcher::PoolFetcher;
 use anyhow::Result;
 use std::collections::VecDeque;
@@ -13,20 +12,15 @@ const MAX_TRANSACTIONS_DISPLAY: usize = 1000;
 pub enum FilterMode {
     All,
     DexOnly,
+    TransfersSwapsOnly,
 }
 
 impl FilterMode {
     pub fn toggle(self) -> Self {
         match self {
             FilterMode::All => FilterMode::DexOnly,
-            FilterMode::DexOnly => FilterMode::All,
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            FilterMode::All => "All Transactions",
-            FilterMode::DexOnly => "DeFi Only",
+            FilterMode::DexOnly => FilterMode::TransfersSwapsOnly,
+            FilterMode::TransfersSwapsOnly => FilterMode::All,
         }
     }
 }
@@ -67,7 +61,6 @@ pub struct AppState {
     pub scroll_offset: usize,
     pub client: EthereumClient,
     pub pool_db: PoolDatabase,
-    pub coingecko_client: CoinGeckoClient,
     pub pool_fetcher: PoolFetcher,
     pub chain_id: u32,
     pub status: String,
@@ -99,7 +92,6 @@ impl AppState {
     pub async fn new(rpc_url: &str, db_path: &str, chain_id: u32) -> Result<Self> {
         let client = EthereumClient::new(rpc_url).await?;
         let pool_db = PoolDatabase::new(db_path)?;
-        let coingecko_client = CoinGeckoClient::new();
         let pool_fetcher = PoolFetcher::new(rpc_url);
         let pool_count = pool_db.pool_count().unwrap_or(0);
         
@@ -109,7 +101,6 @@ impl AppState {
              scroll_offset: 0,
              client,
              pool_db,
-             coingecko_client,
              pool_fetcher,
              chain_id,
              status: "Starting transaction monitor...".to_string(),
@@ -158,35 +149,6 @@ impl AppState {
                 self.status = format!("Error: {}", e);
                 self.connection_healthy = false;
                 self.needs_redraw = true;
-            }
-        }
-        Ok(())
-    }
-
-    /// Sync DEX pools from CoinGecko
-    pub async fn sync_dex_pools(&mut self) -> Result<()> {
-        // Fetch pools from major DEXes on Ethereum
-        let dexes = vec![
-            "uniswap_v3",
-            "uniswap_v2",
-            "sushiswap",
-            "curve",
-            "balancer",
-        ];
-
-        match self.coingecko_client.fetch_all_pools("eth", &dexes, 3).await {
-            Ok(pools) => {
-                if !pools.is_empty() {
-                    // Clear old pools and add new ones
-                    self.pool_db.clear_pools()?;
-                    self.pool_db.add_pools(&pools)?;
-                    self.pool_count = self.pool_db.pool_count()?;
-                    self.last_pool_sync = Local::now().format("%H:%M:%S").to_string();
-                    self.needs_redraw = true;
-                }
-            }
-            Err(e) => {
-                eprintln!("Error syncing DEX pools: {}", e);
             }
         }
         Ok(())
@@ -345,19 +307,6 @@ impl AppState {
         }
     }
 
-    /// Get filtered transactions based on current filter mode
-    pub fn get_filtered_transactions(&self) -> Vec<&MempoolTransaction> {
-        match self.filter_mode {
-            FilterMode::All => self.transactions.iter().collect(),
-            FilterMode::DexOnly => {
-                self.transactions
-                    .iter()
-                    .filter(|tx| tx.is_dex)
-                    .collect()
-            }
-        }
-    }
-
     /// Toggle the filter mode between All and DexOnly
     pub fn toggle_filter(&mut self) {
         self.filter_mode = self.filter_mode.toggle();
@@ -391,6 +340,9 @@ impl AppState {
                 match self.filter_mode {
                     FilterMode::All => true,
                     FilterMode::DexOnly => tx.is_dex,
+                    FilterMode::TransfersSwapsOnly => {
+                        tx.swap_info.is_some()
+                    }
                 }
             })
             .collect();

@@ -47,24 +47,6 @@ impl PoolDatabase {
         Ok(())
     }
 
-    /// Check if an address is a known DEX pool or router
-    pub fn is_dex_pool(&self, address: &str, chain_id: u32) -> Result<bool> {
-        // First check if it's a known router (fast lookup)
-        if self.is_dex_router(address) {
-            return Ok(true);
-        }
-        
-        // Then check our full pool database
-        let normalized = address.to_lowercase();
-        let conn = self.conn.lock().unwrap();
-        let result: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pools WHERE LOWER(address) = ?1 AND chain_id = ?2)",
-            params![&normalized, chain_id],
-            |row| row.get(0),
-        )?;
-        Ok(result)
-    }
-    
     /// Check if an address is a known DEX router (fast in-memory lookup)
     pub fn is_dex_router(&self, address: &str) -> bool {
         let normalized = address.to_lowercase();
@@ -174,29 +156,6 @@ impl PoolDatabase {
         ];
 
         tokens.contains(&normalized.as_str())
-    }
-
-    /// Check if an address is any DeFi-related contract (pools, routers, tokens)
-    pub fn is_defi_related(&self, address: &str, chain_id: u32) -> Result<bool> {
-        // Check token contracts first (fastest)
-        if self.is_token_contract(address) {
-            return Ok(true);
-        }
-        
-        // Then check routers (fast in-memory)
-        if self.is_dex_router(address) {
-            return Ok(true);
-        }
-        
-        // Finally check pool database
-        let normalized = address.to_lowercase();
-        let conn = self.conn.lock().unwrap();
-        let result: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pools WHERE LOWER(address) = ?1 AND chain_id = ?2)",
-            params![&normalized, chain_id],
-            |row| row.get(0),
-        )?;
-        Ok(result)
     }
 
     /// Determine the specific type of DeFi activity for an address
@@ -336,40 +295,7 @@ impl PoolDatabase {
         Ok(count as u32)
     }
 
-    /// Get pool counts for all protocols
-    pub fn get_all_protocol_counts(&self) -> Result<Vec<(String, u32)>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT protocol, COUNT(*) FROM pools GROUP BY protocol ORDER BY protocol"
-        )?;
-        let results = stmt.query_map([], |row| {
-            let protocol: String = row.get(0)?;
-            let count: i64 = row.get(1)?;
-            Ok((protocol, count as u32))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        Ok(results)
-    }
-
     /// Get sample pools for testing (limit number of results)
-    pub fn get_sample_pools(&self, limit: usize) -> Result<Vec<DexPool>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT address, protocol, token0, token1, chain_id FROM pools WHERE address LIKE '0x%' ORDER BY RANDOM() LIMIT ?1"
-        )?;
-        let results = stmt.query_map([limit as i64], |row| {
-            Ok(DexPool {
-                address: row.get(0)?,
-                protocol: row.get(1)?,
-                token0: row.get(2)?,
-                token1: row.get(3)?,
-                chain_id: row.get(4)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-        Ok(results)
-    }
-
     /// Clear all pools (useful for updates)
     pub fn clear_pools(&self) -> Result<()> {
         let conn = self.conn.lock().unwrap();

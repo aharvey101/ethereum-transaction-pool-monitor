@@ -7,7 +7,6 @@ use std::fs::File;
 
 #[derive(Debug, serde::Deserialize)]
 struct ArbooCachedPool {
-    id: u32,
     address: String,
     version: u8,
     token0: String,

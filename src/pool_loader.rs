@@ -17,7 +17,6 @@ pub enum PoolLoaderMessage {
 
 /// Background task that loads pools from the blockchain
 pub struct BackgroundPoolLoader {
-    tx: mpsc::UnboundedSender<PoolLoaderMessage>,
 }
 
 impl BackgroundPoolLoader {
@@ -38,7 +37,7 @@ impl BackgroundPoolLoader {
             }
         });
 
-        (Self { tx }, rx)
+        (Self {}, rx)
     }
 
     /// Load pools from the blockchain
@@ -203,7 +202,7 @@ impl BackgroundPoolLoader {
         }
 
         // Seed known DEX addresses if we don't have enough pools
-        let mut total = v2_count + v3_count;
+        let total = v2_count + v3_count;
         if total < 100 {
             tracing::info!("Background loader: Seeding with known DEX addresses");
             let _ = tx.send(PoolLoaderMessage::Progress(
@@ -216,7 +215,7 @@ impl BackgroundPoolLoader {
             match pool_db.seed_known_dexes(chain_id) {
                 Ok(count) => {
                     tracing::info!("Background loader: Seeded {} DEX addresses", count);
-                    total += count;
+                    // total += count; // Not used after this point
                 }
                 Err(e) => {
                     tracing::warn!("Background loader: Failed to seed DEX addresses: {}", e);

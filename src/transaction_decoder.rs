@@ -15,7 +15,6 @@ pub struct SwapInfo {
     pub token_out: String,
     pub amount_in: Option<String>,
     pub amount_out_min: Option<String>,
-    pub raw_data: String,
 }
 
 /// Transaction decoder for Uniswap and other DEX protocols
@@ -243,7 +242,7 @@ impl TransactionDecoder {
             token_out: format!("to {}", self.format_address(&to_address)),
             amount_in: Some(self.format_amount(&amount_param, &token_symbol, 18)),
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
@@ -266,7 +265,7 @@ impl TransactionDecoder {
             token_out: format!("to {}", self.format_address(&to_address)),
             amount_in: Some(self.format_amount(&amount_param, &token_symbol, 18)),
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
@@ -296,19 +295,19 @@ impl TransactionDecoder {
             token_out: token_out.clone(),
             amount_in: Some(self.format_amount(&amount_in, &token_in, 18)),
             amount_out_min: Some(self.format_amount(&amount_out_min, &token_out, 18)),
-            raw_data: data.to_string(),
+
         })
     }
     
     // Placeholder implementations for other functions
-    fn decode_swap_tokens_for_exact_tokens(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_swap_tokens_for_exact_tokens(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "Swap Tokens (Exact Out)".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
@@ -336,7 +335,7 @@ impl TransactionDecoder {
             token_out: token_out.clone(),
             amount_in: Some(eth_amount),
             amount_out_min: Some(self.format_amount(&amount_out_min, &token_out, 18)),
-            raw_data: data.to_string(),
+
         })
     }
     
@@ -356,18 +355,18 @@ impl TransactionDecoder {
             token_out: "ETH".to_string(),
             amount_in: Some(self.format_amount(&amount_in, &token_in, 18)),
             amount_out_min: Some(self.format_amount(&amount_out_min, "ETH", 18)),
-            raw_data: data.to_string(),
+
         })
     }
     
-    fn decode_swap_exact_tokens_for_eth_supporting_fee(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_swap_exact_tokens_for_eth_supporting_fee(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "Sell for ETH (Fee)".to_string(),
             token_in: "Token".to_string(),
             token_out: "ETH".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
@@ -395,7 +394,7 @@ impl TransactionDecoder {
             token_out: token_out.clone(),
             amount_in: Some(eth_amount),
             amount_out_min: Some(self.format_amount(&amount_out_min, &token_out, 18)),
-            raw_data: data.to_string(),
+
         })
     }
     
@@ -429,62 +428,62 @@ impl TransactionDecoder {
             token_out: token_out_symbol.clone(),
             amount_in: Some(self.format_amount(&amount_in, &token_in_symbol, 18)),
             amount_out_min: Some(self.format_amount(&amount_out_min, &token_out_symbol, 18)),
-            raw_data: data.to_string(),
+
         })
     }
     
-    fn decode_exact_input(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_exact_input(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "V3 Swap Multi".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
-    fn decode_exact_output_single(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_exact_output_single(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "V3 Swap Single (Exact Out)".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
-    fn decode_exact_output(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_exact_output(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "V3 Swap Multi (Exact Out)".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
-    fn decode_1inch_swap(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_1inch_swap(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "1inch Swap".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
     
-    fn decode_1inch_unoswap(&self, data: &str) -> Option<SwapInfo> {
+    fn decode_1inch_unoswap(&self, _data: &str) -> Option<SwapInfo> {
         Some(SwapInfo {
             function_name: "1inch UnoSwap".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
             amount_in: None,
             amount_out_min: None,
-            raw_data: data.to_string(),
+
         })
     }
 }

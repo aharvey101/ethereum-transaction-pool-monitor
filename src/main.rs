@@ -1,9 +1,7 @@
 mod app;
-mod eth_client;
 mod ui;
-mod dex;
+mod eth_client;
 mod pool_db;
-mod coingecko;
 mod pool_fetcher;
 mod pool_loader;
 mod transaction_updater;
@@ -114,7 +112,7 @@ async fn run_tui() {
 
     // Spawn background transaction updater FIRST (before pool loading)
     tracing::info!("Spawning background transaction updater task");
-    let (_tx_updater, mut tx_updater_rx) = BackgroundTransactionUpdater::spawn(
+    let (_tx_updater, tx_updater_rx) = BackgroundTransactionUpdater::spawn(
         rpc_url.clone(),
         db_path.to_string(),
         chain_id,
@@ -123,7 +121,7 @@ async fn run_tui() {
 
     // Spawn background pool loader (runs independently) 
     tracing::info!("Spawning background pool loader task");
-    let (_loader, mut pool_loader_rx) = BackgroundPoolLoader::spawn(
+    let (_loader, pool_loader_rx) = BackgroundPoolLoader::spawn(
         rpc_url.clone(),
         db_path.to_string(),
         chain_id,
