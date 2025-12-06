@@ -50,7 +50,17 @@ impl BackgroundPoolLoader {
         let pool_db = PoolDatabase::new(db_path)?;
         let pool_fetcher = PoolFetcher::new(rpc_url);
 
-        // Clear existing pools
+        // Check if we have sufficient pools already
+        let existing_pool_count = pool_db.pool_count().unwrap_or(0);
+        if existing_pool_count >= 1000 {
+            tracing::info!("Sufficient pools already in database ({}), skipping pool loading", existing_pool_count);
+            let _ = tx.send(PoolLoaderMessage::Complete(0, 0, existing_pool_count));
+            return Ok(());
+        }
+        
+        tracing::info!("Pool count low ({}), starting comprehensive pool scan", existing_pool_count);
+
+        // Clear existing pools only if we're doing a full reload
         pool_db.clear_pools()?;
 
         let mut v2_count = 0;

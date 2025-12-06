@@ -26,14 +26,14 @@ impl PoolFetcher {
     /// Fetch UniswapV3 pools from node by querying PoolCreated events
     /// Scans ALL blocks from V3 deployment (block 12,369,739) to current block
     /// Uses 100k block windows for efficiency
-    /// UniswapV3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea313100
+    /// UniswapV3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea31F984
     pub async fn fetch_uniswap_v3_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
         self.fetch_uniswap_v3_pools_with_progress(pool_db, _chain_id, None).await
     }
 
     /// Fetch UniswapV3 pools with progress callback
     pub async fn fetch_uniswap_v3_pools_with_progress(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
-        const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea313100";
+        const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
         const UNISWAP_V3_DEPLOYMENT_BLOCK: u64 = 12_369_739; // V3 deployed on May 5, 2021
         const BLOCK_WINDOW: u64 = 100_000; // Query in 100k block windows for efficiency
 

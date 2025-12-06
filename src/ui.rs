@@ -212,7 +212,7 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
-    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DEX/All) | s: Sort  | q: Quit  | Green = DEX transactions";
+    let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DEX/All) | s: Sort | r: Refresh Pools | q: Quit  | Green = DEX transactions";
     let status = &app.status;
     let filter_status = format!("Filter: {} | Sort: {} | TX Count: {}", 
         app.filter_mode.label(),
