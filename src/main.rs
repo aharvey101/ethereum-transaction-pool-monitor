@@ -203,21 +203,62 @@ async fn run_app(
             match msg {
                 TransactionUpdateMessage::NewTransactions(transactions) => {
                     tracing::info!("Main: Received {} transactions from background", transactions.len());
-                    // Update transactions from background task
-                    app.transactions.clear();
+                    
+                    // Add new transactions to existing set (don't replace, just add new ones)
+                    let mut added_count = 0;
                     for tx in transactions {
-                        app.transactions.push_back(tx);
-                        if app.transactions.len() > 1000 { // MAX_TRANSACTIONS_DISPLAY
-                            app.transactions.pop_front();
+                        // Check if this transaction is already in our list  
+                        if !app.transactions.iter().any(|existing| existing.hash == tx.hash) {
+                            app.transactions.push_back(tx);
+                            added_count += 1;
                         }
                     }
-                    app.status = format!("{} pending transactions found", app.transactions.len());
+                    
+                    // Limit total transactions
+                    while app.transactions.len() > 2000 {
+                        app.transactions.pop_front();
+                    }
+                    
+                    let pending_count = app.transactions.len();
+                    app.status = format!("{} transactions targeting block #{} (+{} new)", 
+                        pending_count, app.next_block_number, added_count);
+                    
                     app.last_update = Local::now().format("%H:%M:%S").to_string();
                     app.connection_healthy = true;
-                    app.mark_cache_dirty(); // Mark cache as dirty when transactions update
-                    app.cached_title = format!(" Pending Transactions ({}) ", app.transactions.len()); // Update cached title
+                    app.mark_cache_dirty();
+                    app.cached_title = format!(" Targeting Block #{} ({} txs) ", 
+                        app.next_block_number, app.transactions.len());
                     app.needs_redraw = true;
-                    tracing::info!("Main: Updated app status to: {}", app.status);
+                    
+                    tracing::info!("Main: Added {} new transactions, total: {} targeting block #{}", 
+                        added_count, app.transactions.len(), app.next_block_number);
+                }
+                TransactionUpdateMessage::BlockChange { new_block_number, transactions } => {
+                    tracing::info!("Main: NEW BLOCK #{} with {} transactions", new_block_number, transactions.len());
+                    
+                    // Clear all existing transactions - they were targeting the previous block
+                    app.transactions.clear();
+                    app.current_block_number = Some(new_block_number);
+                    app.next_block_number = new_block_number + 1;
+                    
+                    // Add all new transactions targeting the next block
+                    for tx in transactions {
+                        app.transactions.push_back(tx);
+                    }
+                    
+                    let pending_count = app.transactions.len();
+                    app.status = format!("🆕 Block #{} mined! {} transactions now targeting block #{}", 
+                        new_block_number, pending_count, app.next_block_number);
+                    
+                    app.last_update = Local::now().format("%H:%M:%S").to_string();
+                    app.connection_healthy = true;
+                    app.mark_cache_dirty();
+                    app.cached_title = format!(" Targeting Block #{} ({} txs) ", 
+                        app.next_block_number, app.transactions.len());
+                    app.needs_redraw = true;
+                    
+                    tracing::info!("Main: Block change processed - {} transactions targeting block #{}", 
+                        app.transactions.len(), app.next_block_number);
                 }
                 TransactionUpdateMessage::Error(err) => {
                     tracing::error!("Main: Received error from background: {}", err);
@@ -226,6 +267,13 @@ async fn run_app(
                     app.needs_redraw = true;
                     tracing::warn!("Background transaction update error: {}", err);
                 }
+            }
+        }
+
+        // Check if we should load more transactions (pagination)
+        if app.should_load_more() {
+            if let Err(e) = app.load_more_transactions().await {
+                tracing::error!("Failed to load more transactions: {}", e);
             }
         }
 

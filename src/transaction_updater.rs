@@ -6,6 +6,7 @@ use crate::pool_db::PoolDatabase;
 #[derive(Debug)]
 pub enum TransactionUpdateMessage {
     NewTransactions(Vec<MempoolTransaction>),
+    BlockChange { new_block_number: u64, transactions: Vec<MempoolTransaction> },
     Error(String),
 }
 
@@ -74,16 +75,41 @@ impl BackgroundTransactionUpdater {
         
         tracing::info!("Background transaction updater started successfully");
         
+        let mut last_block_number: Option<u64> = None;
+        
         loop {
             tracing::debug!("Background: Starting transaction fetch...");
-            match client.get_pending_transactions(&pool_db, chain_id).await {
-                Ok(transactions) => {
-                    tracing::info!("Background: Got {} pending transactions", transactions.len());
-                    let _ = tx.send(TransactionUpdateMessage::NewTransactions(transactions));
+            
+            // Check for new block first
+            match client.get_latest_block_number().await {
+                Ok(current_block) => {
+                    let block_changed = last_block_number.map_or(true, |last| current_block > last);
+                    
+                    // Fetch transactions
+                    match client.get_pending_transactions_paginated(&pool_db, chain_id, 0, 2000).await {
+                        Ok(transactions) => {
+                            if block_changed {
+                                tracing::info!("Background: New block {} detected with {} pending transactions", 
+                                    current_block, transactions.len());
+                                let _ = tx.send(TransactionUpdateMessage::BlockChange { 
+                                    new_block_number: current_block, 
+                                    transactions 
+                                });
+                                last_block_number = Some(current_block);
+                            } else {
+                                tracing::info!("Background: Got {} pending transactions (sorted by gas price)", transactions.len());
+                                let _ = tx.send(TransactionUpdateMessage::NewTransactions(transactions));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Background: Error fetching transactions: {}", e);
+                            let _ = tx.send(TransactionUpdateMessage::Error(format!("Error fetching transactions: {}", e)));
+                        }
+                    }
                 }
                 Err(e) => {
-                    tracing::error!("Background: Error fetching transactions: {}", e);
-                    let _ = tx.send(TransactionUpdateMessage::Error(format!("Error fetching transactions: {}", e)));
+                    tracing::error!("Background: Error fetching block number: {}", e);
+                    let _ = tx.send(TransactionUpdateMessage::Error(format!("Error fetching block number: {}", e)));
                 }
             }
             

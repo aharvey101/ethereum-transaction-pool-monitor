@@ -303,6 +303,43 @@ impl PoolDatabase {
         Ok(())
     }
 
+    /// Get the latest (highest) pool ID for a specific protocol
+    /// This allows resumable collection by finding where we left off
+    pub fn get_latest_pool_id(&self, protocol: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT address FROM pools 
+             WHERE protocol = ?1 
+             ORDER BY address DESC 
+             LIMIT 1"
+        )?;
+        
+        let result = stmt.query_row(params![protocol], |row| {
+            Ok(row.get::<_, String>(0)?)
+        }).optional()?;
+        
+        Ok(result)
+    }
+
+    /// Check if collection is complete by looking for a reasonable pool count
+    /// V2: Should have 80,000+ pools when complete
+    /// V3: Should have 30,000+ pools when complete
+    /// V4: Should have 1,000+ pools when complete (newer protocol)
+    /// SushiSwap: Should have 5,000+ pools when complete
+    /// Curve: Should have 1,000+ pools when complete
+    pub fn is_collection_complete(&self, protocol: &str) -> Result<bool> {
+        let count = self.get_pool_count_by_protocol(protocol)?;
+        let threshold = match protocol {
+            "UniswapV2" => 80_000, // Expect ~100k+
+            "UniswapV3" => 30_000, // Expect ~50k+
+            "UniswapV4" => 1_000,  // Expect ~5k+ (newer protocol)
+            "SushiSwap" => 5_000,  // Expect ~10k+  
+            "Curve" => 1_000,      // Expect ~2k+
+            _ => return Ok(false),
+        };
+        Ok(count >= threshold)
+    }
+
     /// Seed database with known DEX router addresses for testing
     pub fn seed_known_dexes(&self, chain_id: u32) -> Result<u32> {
         let known_dexes = vec![

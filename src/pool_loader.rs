@@ -145,6 +145,34 @@ impl BackgroundPoolLoader {
                     return Ok(());
                 }
             }
+
+            // Fetch V4 pools (if deployed)
+            tracing::info!("Background loader: Checking for UniswapV4 pools");
+            match pool_fetcher.fetch_uniswap_v4_pools(&pool_db, chain_id).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!("Background loader: Found {} V4 pools", count);
+                        let _ = tx.send(PoolLoaderMessage::Progress(
+                            format!("UniswapV4: Complete! {} pools found", count),
+                            v2_count,
+                            v3_count,
+                            80, // Progress point for V4 completion
+                        ));
+                    } else {
+                        tracing::info!("Background loader: UniswapV4 not yet deployed");
+                        let _ = tx.send(PoolLoaderMessage::Progress(
+                            "UniswapV4: Not deployed yet".to_string(),
+                            v2_count,
+                            v3_count,
+                            80,
+                        ));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Background loader: Failed to check V4 pools: {}", e);
+                    // Don't fail completely for V4 since it's not deployed yet
+                }
+            }
         } else {
             // Use the new parallel scanning method (DEFAULT)
             tracing::info!("Background loader: Starting parallel pool scanning (default)");

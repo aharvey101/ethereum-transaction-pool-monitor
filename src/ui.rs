@@ -55,6 +55,11 @@ fn draw_header(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
             Span::raw(" | "),
             Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
             Span::raw(" | "),
+            Span::styled(
+                format!("Target Block: #{}", app.next_block_number), 
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            ),
+            Span::raw(" | "),
             Span::raw(format!("TX: {}  | Pools: {} | Sync: {}", app.last_update, app.pool_count, app.last_pool_sync)),
         ])
     )
@@ -236,15 +241,28 @@ fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
     let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DeFi/All) | s: Sort  | q: Quit";
     let color_legend = "Colors: Blue=Stablecoin | Yellow=Token | Green=DEX Pool | Cyan=DEX Router";
     let status = &app.status;
-    let filter_status = format!("Filter: {} | Sort: {} | TX Count: {}", 
-        match app.filter_mode {
-            crate::app::FilterMode::All => "All Transactions",
-            crate::app::FilterMode::DexOnly => "DeFi Only",
-            crate::app::FilterMode::TransfersSwapsOnly => "Transfers/Swaps Only",
-        },
-        app.sort_field.label(),
-        app.get_filtered_transaction_count_display()
-    );
+    
+    let filter_status = if app.is_loading_more {
+        format!("Filter: {} | Sort: {} | TX Count: {} | Loading more...", 
+            match app.filter_mode {
+                crate::app::FilterMode::All => "All Transactions",
+                crate::app::FilterMode::DexOnly => "DeFi Only",
+                crate::app::FilterMode::TransfersSwapsOnly => "Transfers/Swaps Only",
+            },
+            app.sort_field.label(),
+            app.get_filtered_transaction_count_display()
+        )
+    } else {
+        format!("Filter: {} | Sort: {} | TX Count: {}", 
+            match app.filter_mode {
+                crate::app::FilterMode::All => "All Transactions",
+                crate::app::FilterMode::DexOnly => "DeFi Only",
+                crate::app::FilterMode::TransfersSwapsOnly => "Transfers/Swaps Only",
+            },
+            app.sort_field.label(),
+            app.get_filtered_transaction_count_display()
+        )
+    };
 
     let footer = ratatui::widgets::Paragraph::new(
         vec![

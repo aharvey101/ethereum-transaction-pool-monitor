@@ -33,6 +33,13 @@ impl PoolFetcher {
         self.fetch_uniswap_v3_pools_with_progress(pool_db, _chain_id, None).await
     }
 
+    /// Fetch UniswapV4 pools from node by querying PoolCreated events  
+    /// NOTE: V4 is still in development - this will be updated with actual factory address when deployed
+    /// UniswapV4 Factory: TBD (V4 not deployed yet)
+    pub async fn fetch_uniswap_v4_pools(&self, pool_db: &PoolDatabase, _chain_id: u32) -> Result<u32> {
+        self.fetch_uniswap_v4_pools_with_progress(pool_db, _chain_id, None).await
+    }
+
     /// Fetch UniswapV3 pools with progress callback
     pub async fn fetch_uniswap_v3_pools_with_progress(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
         const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
@@ -125,6 +132,27 @@ impl PoolFetcher {
             cb.lock().unwrap()(format!("UniswapV3: Complete! {} pools found", all_pools.len()), all_pools.len() as u32);
         }
         Ok(all_pools.len() as u32)
+    }
+
+    /// Fetch UniswapV4 pools with progress callback
+    /// NOTE: Uniswap V4 is still in development/testing phase
+    /// This method will be updated when V4 is deployed to mainnet
+    pub async fn fetch_uniswap_v4_pools_with_progress(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
+        // NOTE: These are placeholder values - update when V4 is actually deployed
+        const UNISWAP_V4_FACTORY: &str = "0x0000000000000000000000000000000000000000"; // Placeholder - V4 not deployed yet
+        const UNISWAP_V4_DEPLOYMENT_BLOCK: u64 = 0; // Will be set when V4 deploys
+        
+        tracing::warn!("Uniswap V4 is not yet deployed on mainnet - skipping V4 pool scanning");
+        if let Some(ref cb) = progress {
+            cb.lock().unwrap()("UniswapV4: Not deployed yet - skipping".to_string(), 0);
+        }
+        
+        // TODO: Implement V4 pool scanning when deployed
+        // The V4 factory will likely have a different event structure due to hooks
+        // and other V4 features, so this will need to be implemented based on
+        // the actual V4 factory contract when it's available
+        
+        Ok(0) // Return 0 pools found since V4 isn't deployed
     }
 
 
@@ -231,8 +259,8 @@ impl PoolFetcher {
     /// Uses smaller chunk sizes and parallel processing for maximum speed
     /// Now supports: UniswapV2, UniswapV3, SushiSwap, PancakeSwap, ShibaSwap, FraxSwap, CurveStableswapNG, CurveTwocryptoNG
     pub async fn fetch_pools_parallel(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
-        const CHUNK_SIZE: u64 = 50_000; // Smaller chunks for better parallelization
-        const BATCH_SIZE: usize = 20; // Number of concurrent tasks per batch
+        const CHUNK_SIZE: u64 = 100_000; // Optimized for local node - 100k block windows
+        const BATCH_SIZE: usize = 10; // Increased batch size for local node performance
         
         tracing::info!("Starting parallel multi-DEX pool scanning with chunk size {} and batch size {}", CHUNK_SIZE, BATCH_SIZE);
         
@@ -587,6 +615,8 @@ async fn scan_uniswap_v2_pools_range(
 ) -> Result<Vec<DexPool>> {
     const UNISWAP_V2_FACTORY: &str = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f";
     
+    tracing::info!("🔍 Scanning UniswapV2 blocks {}-{}", from_block, to_block);
+    
     let factory_addr = Address::from_str(UNISWAP_V2_FACTORY)?;
     let event_filter = Filter::new()
         .from_block(from_block)
@@ -598,27 +628,32 @@ async fn scan_uniswap_v2_pools_range(
     
     match provider.get_logs(&event_filter).await {
         Ok(logs) => {
+            tracing::info!("📊 UniswapV2 blocks {}-{}: found {} logs", from_block, to_block, logs.len());
             for log in logs {
                 if let Ok(pool) = parse_v2_pair_created_log(&log, "UniswapV2") {
+                    tracing::info!("✅ UniswapV2 pool found: {}", pool.address);
                     pools.push(pool);
                 }
             }
         }
         Err(e) => {
+            tracing::warn!("❌ UniswapV2 error blocks {}-{}: {}", from_block, to_block, e);
             return Err(anyhow::anyhow!("Failed to get UniswapV2 logs for range {}-{}: {}", from_block, to_block, e));
         }
     }
     
+    tracing::info!("✅ UniswapV2 blocks {}-{}: {} pools total", from_block, to_block, pools.len());
     Ok(pools)
 }
 
-/// Scan a specific block range for UniswapV3 pools
 async fn scan_uniswap_v3_pools_range(
     provider: Arc<ReqwestProvider>, 
     from_block: u64, 
     to_block: u64
 ) -> Result<Vec<DexPool>> {
     const UNISWAP_V3_FACTORY: &str = "0x1F98431c8aD98523631AE4a59f267346ea31F984";
+    
+    tracing::info!("🔍 Scanning UniswapV3 blocks {}-{}", from_block, to_block);
     
     let factory_addr = Address::from_str(UNISWAP_V3_FACTORY)?;
     let event_filter = Filter::new()
@@ -631,17 +666,21 @@ async fn scan_uniswap_v3_pools_range(
     
     match provider.get_logs(&event_filter).await {
         Ok(logs) => {
+            tracing::info!("📊 UniswapV3 blocks {}-{}: found {} logs", from_block, to_block, logs.len());
             for log in logs {
                 if let Ok(pool) = parse_v3_pool_created_log(&log) {
+                    tracing::info!("✅ UniswapV3 pool found: {}", pool.address);
                     pools.push(pool);
                 }
             }
         }
         Err(e) => {
+            tracing::warn!("❌ UniswapV3 error blocks {}-{}: {}", from_block, to_block, e);
             return Err(anyhow::anyhow!("Failed to get UniswapV3 logs for range {}-{}: {}", from_block, to_block, e));
         }
     }
     
+    tracing::info!("✅ UniswapV3 blocks {}-{}: {} pools total", from_block, to_block, pools.len());
     Ok(pools)
 }
 

@@ -5,7 +5,7 @@ use anyhow::Result;
 use std::collections::VecDeque;
 use chrono::Local;
 
-const MAX_TRANSACTIONS_DISPLAY: usize = 1000;
+const MAX_TRANSACTIONS_DISPLAY: usize = 2000;
 
 /// Filter mode for transaction display
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,6 +75,7 @@ pub struct AppState {
     pub pools_found_count: u32,
     pub v2_pools_found: u32,
     pub v3_pools_found: u32,
+    pub v4_pools_found: u32,
     pub pool_loading_progress_percent: u32,
     pub filter_mode: FilterMode,
     pub sort_field: SortField,
@@ -85,6 +86,13 @@ pub struct AppState {
     pub cached_filtered_sorted: Vec<usize>, // indices into transactions deque
     cached_filtered_count: usize, // cached count to avoid O(n) on every scroll
     cache_dirty: bool,
+    // Pagination fields
+    pub is_loading_more: bool,
+    pub has_more_data: bool,
+    pub should_load_more: bool, // flag to trigger loading more data
+    // Next block tracking
+    pub current_block_number: Option<u64>,
+    pub next_block_number: u64,
 }
 
 impl AppState {
@@ -95,6 +103,9 @@ impl AppState {
         let pool_fetcher = PoolFetcher::new(rpc_url);
         let pool_count = pool_db.pool_count().unwrap_or(0);
         
+         // Get initial block number
+         let current_block = client.get_latest_block_number().await.unwrap_or(0);
+         
          Ok(AppState {
              transactions: VecDeque::new(),
              selected_index: 0,
@@ -115,6 +126,7 @@ impl AppState {
              pools_found_count: 0,
              v2_pools_found: 0,
              v3_pools_found: 0,
+             v4_pools_found: 0,
              pool_loading_progress_percent: 0,
              filter_mode: FilterMode::All,
              sort_field: SortField::Default,
@@ -123,26 +135,71 @@ impl AppState {
              cached_filtered_sorted: Vec::new(),
              cached_filtered_count: 0,
              cache_dirty: true,
+             // Initialize pagination fields
+             is_loading_more: false,
+             has_more_data: true,
+             should_load_more: false,
+             // Initialize block tracking
+             current_block_number: Some(current_block),
+             next_block_number: current_block + 1,
          })
      }
 
     /// Update transactions from the mempool
     pub async fn update_transactions(&mut self) -> Result<()> {
+        // First, check if a new block has been mined
+        let latest_block = self.client.get_latest_block_number().await.unwrap_or(0);
+        let block_changed = self.current_block_number.map_or(true, |current| latest_block > current);
+        
+        if block_changed {
+            tracing::info!("New block detected! Previous: {:?}, Current: {}", 
+                self.current_block_number, latest_block);
+            
+            // Clear transactions as they were targeting the previous block
+            self.transactions.clear();
+            self.current_block_number = Some(latest_block);
+            self.next_block_number = latest_block + 1;
+            
+            tracing::info!("Cleared transactions - now targeting block #{}", self.next_block_number);
+        }
+        
         match self.client.get_pending_transactions(&self.pool_db, self.chain_id).await {
             Ok(new_txs) => {
-                // Clear and add new transactions
-                self.transactions.clear();
-                for tx in new_txs {
-                    self.transactions.push_back(tx);
-                    if self.transactions.len() > MAX_TRANSACTIONS_DISPLAY {
-                        self.transactions.pop_front();
+                // If no new block, preserve existing transactions and add any new ones
+                if !block_changed {
+                    // Keep existing transactions and add new ones
+                    for tx in new_txs {
+                        // Check if this transaction is already in our list
+                        if !self.transactions.iter().any(|existing| existing.hash == tx.hash) {
+                            self.transactions.push_back(tx);
+                        }
+                    }
+                } else {
+                    // New block - replace all transactions
+                    for tx in new_txs {
+                        self.transactions.push_back(tx);
                     }
                 }
-                self.status = format!("{} pending transactions found", self.transactions.len());
+                
+                // Limit total transactions
+                while self.transactions.len() > MAX_TRANSACTIONS_DISPLAY {
+                    self.transactions.pop_front();
+                }
+                
+                let status_msg = if block_changed {
+                    format!("{} transactions targeting block #{}", 
+                        self.transactions.len(), self.next_block_number)
+                } else {
+                    format!("{} pending transactions targeting block #{}", 
+                        self.transactions.len(), self.next_block_number)
+                };
+                
+                self.status = status_msg;
                 self.last_update = Local::now().format("%H:%M:%S").to_string();
                 self.connection_healthy = true;
                 self.cache_dirty = true; // Mark cache as dirty when transactions update
-                self.cached_title = format!(" Pending Transactions ({}) ", self.transactions.len()); // Update cached title
+                self.cached_title = format!(" Targeting Block #{} ({} txs) ", 
+                    self.next_block_number, self.transactions.len()); // Update cached title
                 self.needs_redraw = true;
             }
             Err(e) => {
@@ -222,6 +279,29 @@ impl AppState {
             }
         }
 
+        // Fetch UniswapV4 pools from node
+        tracing::info!("Fetching UniswapV4 pools from node");
+        self.pools_loading_progress = "UniswapV4: Checking deployment...".to_string();
+        self.needs_redraw = true;
+        
+        match self.pool_fetcher.fetch_uniswap_v4_pools(&self.pool_db, self.chain_id).await {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!("Synced {} UniswapV4 pools from node", count);
+                    total += count;
+                    self.pools_found_count = total;
+                    self.pools_loading_progress = format!("UniswapV4: Complete! {} pools found", count);
+                } else {
+                    tracing::info!("UniswapV4 not yet deployed - skipping");
+                    self.pools_loading_progress = "UniswapV4: Not deployed yet".to_string();
+                }
+                self.needs_redraw = true;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check UniswapV4 pools: {}", e);
+            }
+        }
+
         // If we don't have enough pools, fall back to seeding with known DEX addresses
         if total < 100 {
             tracing::info!("Not enough pools found from node ({} < 100), seeding with known DEX addresses", total);
@@ -255,7 +335,17 @@ impl AppState {
     pub fn scroll_down(&mut self, amount: usize, max_rows: usize) {
         let filtered_count = self.get_filtered_transaction_count();
         let max_scroll = filtered_count.saturating_sub(max_rows);
-        self.scroll_offset = (self.scroll_offset + amount).min(max_scroll);
+        let new_scroll_offset = (self.scroll_offset + amount).min(max_scroll);
+        
+        // Check if we're near the bottom (within 10 rows) and should load more
+        let threshold = 10; // Load more when within 10 rows of bottom
+        if !self.is_loading_more && 
+           self.has_more_data && 
+           new_scroll_offset + max_rows + threshold >= filtered_count {
+            self.should_load_more = true;
+        }
+        
+        self.scroll_offset = new_scroll_offset;
         self.needs_redraw = true;
     }
 
@@ -400,5 +490,72 @@ impl AppState {
     /// Mark cache as dirty (for external updates like new transactions)
     pub fn mark_cache_dirty(&mut self) {
         self.cache_dirty = true;
+    }
+
+    /// Load more pending transactions (for pagination)
+    pub async fn load_more_transactions(&mut self) -> Result<()> {
+        if self.is_loading_more || !self.has_more_data {
+            return Ok(());
+        }
+
+        self.is_loading_more = true;
+        self.should_load_more = false;
+
+        // Calculate offset based on current transaction count
+        let current_count = self.transactions.len();
+        let batch_size = 500; // Load 500 more pending transactions at a time
+
+        tracing::info!("Loading more pending transactions (offset: {}, batch: {})", current_count, batch_size);
+
+        // Fetch more pending transactions with pagination
+        match self.client.get_pending_transactions_paginated(&self.pool_db, self.chain_id, current_count, batch_size).await {
+            Ok(more_pending_txs) => {
+                if more_pending_txs.is_empty() {
+                    self.has_more_data = false;
+                    tracing::info!("No more pending transactions available for pagination");
+                } else {
+                    let tx_count = more_pending_txs.len();
+                    tracing::info!("Found {} more pending transactions", tx_count);
+                    
+                    // Add pending transactions to the end of the deque
+                    for tx in more_pending_txs {
+                        self.transactions.push_back(tx);
+                    }
+                    
+                    // Limit total transactions to prevent memory issues
+                    let original_len = self.transactions.len();
+                    while self.transactions.len() > 5000 {
+                        self.transactions.pop_front();
+                    }
+                    if original_len > 5000 {
+                        tracing::info!("Limited transactions from {} to {} to prevent memory issues", 
+                            original_len, self.transactions.len());
+                    }
+                    
+                    // If we got fewer transactions than requested, we've reached the end
+                    if tx_count < batch_size {
+                        self.has_more_data = false;
+                        tracing::info!("Reached end of pending transactions (got {} < {})", tx_count, batch_size);
+                    }
+                    
+                    self.mark_cache_dirty();
+                    self.needs_redraw = true;
+                    tracing::info!("Loaded {} more pending transactions, total: {}", 
+                        tx_count, self.transactions.len());
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load more pending transactions: {}", e);
+                // Don't set has_more_data to false on error, might be temporary
+            }
+        }
+
+        self.is_loading_more = false;
+        Ok(())
+    }
+
+    /// Check if we should load more data (for external polling)
+    pub fn should_load_more(&self) -> bool {
+        self.should_load_more && !self.is_loading_more && self.has_more_data
     }
 }

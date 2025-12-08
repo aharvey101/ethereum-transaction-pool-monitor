@@ -336,4 +336,270 @@ impl EthereumClient {
 
         MempoolTransaction::from_value(result, pool_db, chain_id)
     }
+
+    /// Get pending transactions with pagination support, sorted by likelihood of being in next block
+    pub async fn get_pending_transactions_paginated(&self, 
+        pool_db: &PoolDatabase, 
+        chain_id: u32,
+        offset: usize,
+        limit: usize
+    ) -> Result<Vec<MempoolTransaction>> {
+        // Get raw pending transactions without expensive processing
+        let raw_txs = self.get_pending_transactions_raw().await?;
+        
+        // Sort by gas price (parsing hex directly for speed)
+        let mut tx_with_gas: Vec<_> = raw_txs.into_iter()
+            .filter_map(|tx| {
+                let gas_price_hex = tx.get("gasPrice")?.as_str()?;
+                let gas_price_wei = u64::from_str_radix(gas_price_hex.trim_start_matches("0x"), 16).ok()?;
+                Some((tx, gas_price_wei))
+            })
+            .collect();
+        
+        // Sort by gas price descending (highest first)
+        tx_with_gas.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        // Apply pagination and then process only the transactions we need
+        let start = offset;
+        let end = (offset + limit).min(tx_with_gas.len());
+        
+        if start >= tx_with_gas.len() {
+            return Ok(Vec::new());
+        }
+        
+        let mut result = Vec::new();
+        for (tx_value, _gas_price) in &tx_with_gas[start..end] {
+            if let Ok(tx) = MempoolTransaction::from_value(tx_value, pool_db, chain_id) {
+                result.push(tx);
+            }
+        }
+        
+        Ok(result)
+    }
+
+    /// Get raw pending transaction data without expensive processing
+    async fn get_pending_transactions_raw(&self) -> Result<Vec<serde_json::Value>> {
+        // Try txpool_content first (works with Reth, Geth, Erigon)
+        match self.get_pending_raw_from_txpool().await {
+            Ok(txs) => {
+                if !txs.is_empty() {
+                    return Ok(txs);
+                }
+            }
+            Err(_) => {
+                // If txpool_content fails, try filter-based approach
+            }
+        }
+
+        // Fallback to filter-based approach
+        self.get_pending_raw_from_filter().await
+    }
+
+    /// Get raw pending transactions from txpool_content (fast, no processing)
+    async fn get_pending_raw_from_txpool(&self) -> Result<Vec<serde_json::Value>> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "txpool_content",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("txpool_content error: {}", error["message"]);
+        }
+
+        let result = response_body
+            .get("result")
+            .ok_or_else(|| anyhow::anyhow!("No result in response"))?;
+
+        let pending = result
+            .get("pending")
+            .ok_or_else(|| anyhow::anyhow!("No pending key in result"))?;
+
+        let mut transactions = Vec::new();
+
+        // pending is a map of address -> map of nonce -> tx
+        if let Some(pending_map) = pending.as_object() {
+            for (_address, nonce_map) in pending_map {
+                if let Some(txs_by_nonce) = nonce_map.as_object() {
+                    for (_nonce, tx) in txs_by_nonce {
+                        transactions.push(tx.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(transactions)
+    }
+
+    /// Fallback: Get raw pending transactions using filter-based approach
+    async fn get_pending_raw_from_filter(&self) -> Result<Vec<serde_json::Value>> {
+        // Create filter
+        let filter_request = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_newPendingTransactionFilter",
+            "params": [],
+            "id": 1
+        });
+
+        let filter_response = self.http_client
+            .post(&self.rpc_url)
+            .json(&filter_request)
+            .send()
+            .await?;
+
+        let filter_body: serde_json::Value = filter_response.json().await?;
+
+        if let Some(error) = filter_body.get("error") {
+            anyhow::bail!("Filter creation error: {}", error["message"]);
+        }
+
+        let filter_id = filter_body
+            .get("result")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| anyhow::anyhow!("No filter ID returned"))?;
+
+        // Get filter changes
+        let changes_request = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getFilterChanges",
+            "params": [filter_id],
+            "id": 1
+        });
+
+        let changes_response = self.http_client
+            .post(&self.rpc_url)
+            .json(&changes_request)
+            .send()
+            .await?;
+
+        let changes_body: serde_json::Value = changes_response.json().await?;
+
+        if let Some(error) = changes_body.get("error") {
+            anyhow::bail!("Filter changes error: {}", error["message"]);
+        }
+
+        let hashes = changes_body
+            .get("result")
+            .and_then(|r| r.as_array())
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|h| h.as_str().map(|s| s.to_string()))
+            .collect::<Vec<_>>();
+
+        // Fetch full transaction details for each hash
+        let mut transactions = Vec::new();
+        for hash in hashes {
+            match self.get_transaction_raw_by_hash(&hash).await {
+                Ok(tx) => transactions.push(tx),
+                Err(_) => {
+                    // Skip individual transaction errors
+                }
+            }
+        }
+
+        Ok(transactions)
+    }
+
+    /// Fetch raw transaction details by hash (no processing)
+    async fn get_transaction_raw_by_hash(&self, hash: &str) -> Result<serde_json::Value> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getTransactionByHash",
+            "params": [hash],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let result = response_body
+            .get("result")
+            .ok_or_else(|| anyhow::anyhow!("Transaction not found"))?;
+
+        Ok(result.clone())
+    }
+
+    /// Get the current latest block number
+    pub async fn get_latest_block_number(&self) -> Result<u64> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_blockNumber",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let block_hex = response_body
+            .get("result")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| anyhow::anyhow!("No block number returned"))?;
+
+        let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)?;
+        Ok(block_number)
+    }
+
+    /// Get the current base fee from the latest block (for EIP-1559 transactions)
+    pub async fn get_current_base_fee(&self) -> Result<f64> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getBlockByNumber",
+            "params": ["latest", false],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let block = response_body
+            .get("result")
+            .ok_or_else(|| anyhow::anyhow!("Block not found"))?;
+
+        // Parse base fee per gas (EIP-1559)
+        if let Some(base_fee_hex) = block.get("baseFeePerGas").and_then(|v| v.as_str()) {
+            let base_fee_wei = u64::from_str_radix(base_fee_hex.trim_start_matches("0x"), 16)?;
+            let base_fee_gwei = base_fee_wei as f64 / 1_000_000_000.0;
+            Ok(base_fee_gwei)
+        } else {
+            // Fallback for pre-EIP-1559 blocks
+            Ok(0.0)
+        }
+    }
 }

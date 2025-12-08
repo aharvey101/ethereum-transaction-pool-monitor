@@ -29,6 +29,14 @@ name = "test_multi_dex"
 path = "src/bin/test_multi_dex.rs"
 
 [[bin]]
+name = "run_comprehensive_scan"
+path = "run_comprehensive_scan.rs"
+
+[[bin]]
+name = "graph_pool_fetcher"
+path = "src/bin/graph_pool_fetcher.rs"
+
+[[bin]]
 name = "test_dex_detection"
 path = "src/bin/test_dex_detection.rs"
 

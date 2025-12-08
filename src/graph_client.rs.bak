@@ -1,0 +1,371 @@
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashMap;
+use crate::pool_db::{DexPool, PoolDatabase};
+
+/// The Graph API client for querying Uniswap subgraphs
+pub struct GraphClient {
+    client: reqwest::Client,
+    query_count: u32,
+    api_key: String,
+}
+
+impl GraphClient {
+    /// Create a new Graph client with API key
+    pub fn new(api_key: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            query_count: 0,
+            api_key,
+        }
+    }
+
+    /// Create a new Graph client with API key from environment
+    pub fn from_env() -> Result<Self> {
+        let api_key = std::env::var("GRAPH_API_KEY")
+            .map_err(|_| anyhow::anyhow!("GRAPH_API_KEY environment variable not set"))?;
+        Ok(Self::new(api_key))
+    }
+
+/// UniswapV2 Pair from The Graph
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GraphV2Pair {
+    pub id: String,
+    pub token0: GraphToken,
+    pub token1: GraphToken,
+}
+
+/// UniswapV3 Pool from The Graph  
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GraphV3Pool {
+    pub id: String,
+    pub token0: GraphToken,
+    pub token1: GraphToken,
+    #[serde(rename = "feeTier")]
+    pub fee_tier: String,
+}
+
+/// Token info from The Graph
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GraphToken {
+    pub id: String,
+    pub symbol: String,
+    pub name: String,
+}
+
+/// Response wrapper for GraphQL queries
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GraphResponse<T> {
+    pub data: Option<T>,
+    pub errors: Option<Vec<GraphError>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GraphError {
+    pub message: String,
+}
+
+/// UniswapV2 pairs response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct V2PairsResponse {
+    pub pairs: Vec<GraphV2Pair>,
+}
+
+/// UniswapV3 pools response  
+#[derive(Debug, Serialize, Deserialize)]
+pub struct V3PoolsResponse {
+    pub pools: Vec<GraphV3Pool>,
+}
+
+impl GraphClient {
+    /// Create a new Graph client
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            query_count: 0,
+        }
+    }
+
+    /// Get the current query count
+    pub fn query_count(&self) -> u32 {
+        self.query_count
+    }
+
+    /// Fetch all UniswapV2 pairs from The Graph
+    pub async fn fetch_all_v2_pairs(&mut self) -> Result<Vec<GraphV2Pair>> {
+        // Official Uniswap V2 subgraph on The Graph Network
+        let endpoint = format!(
+            "https://gateway.thegraph.com/api/{}/subgraphs/id/ELUcwgpm14LKPLrBRuVvPvNKHQ9HvwmtKgKSH6123cr7",
+            self.api_key
+        );
+        
+        println!("🔍 Fetching UniswapV2 pairs from The Graph Network...");
+        println!("🔗 Using endpoint: {}", endpoint.replace(&self.api_key, "[API_KEY]"));
+        
+        const BATCH_SIZE: usize = 1000;
+        
+        self.try_fetch_v2_pairs(&endpoint, BATCH_SIZE).await
+    }
+    
+    async fn try_fetch_v2_pairs(&mut self, endpoint: &str, batch_size: usize) -> Result<Vec<GraphV2Pair>> {
+        
+        let mut all_pairs = Vec::new();
+        let mut last_id = String::new();
+        let mut batch_count = 0;
+        
+        loop {
+            batch_count += 1;
+            
+            let query = if last_id.is_empty() {
+                format!(r#"
+                    query {{
+                        pairs(first: {}, orderBy: id, orderDirection: asc) {{
+                            id
+                            token0 {{
+                                id
+                                symbol
+                                name
+                            }}
+                            token1 {{
+                                id
+                                symbol
+                                name
+                            }}
+                        }}
+                    }}
+                "#, batch_size)
+            } else {
+                format!(r#"
+                    query {{
+                        pairs(first: {}, orderBy: id, orderDirection: asc, where: {{id_gt: "{}"}}) {{
+                            id
+                            token0 {{
+                                id
+                                symbol
+                                name
+                            }}
+                            token1 {{
+                                id
+                                symbol
+                                name
+                            }}
+                        }}
+                    }}
+                "#, batch_size, last_id)
+            };
+            
+            let response = self.execute_query::<V2PairsResponse>(endpoint, &query).await?;
+            let pairs = response.pairs;
+            
+            println!("📊 Batch {}: Retrieved {} V2 pairs (Total: {})", 
+                     batch_count, pairs.len(), all_pairs.len() + pairs.len());
+            
+            if pairs.is_empty() {
+                break;
+            }
+            
+            if let Some(last_pair) = pairs.last() {
+                last_id = last_pair.id.clone();
+            }
+            
+            all_pairs.extend(pairs);
+            
+            // Small delay to be respectful to The Graph
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        Ok(all_pairs)
+    }
+
+    /// Fetch all UniswapV3 pools from The Graph
+    pub async fn fetch_all_v3_pools(&mut self) -> Result<Vec<GraphV3Pool>> {
+        // Official Uniswap V3 subgraph on The Graph Network
+        let endpoint = format!(
+            "https://gateway.thegraph.com/api/{}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
+            self.api_key
+        );
+        
+        println!("🔍 Fetching UniswapV3 pools from The Graph Network...");
+        println!("🔗 Using endpoint: {}", endpoint.replace(&self.api_key, "[API_KEY]"));
+        
+        const BATCH_SIZE: usize = 1000;
+        
+        self.try_fetch_v3_pools(&endpoint, BATCH_SIZE).await
+    }
+    
+    async fn try_fetch_v3_pools(&mut self, endpoint: &str, batch_size: usize) -> Result<Vec<GraphV3Pool>> {
+        
+        let mut all_pools = Vec::new();
+        let mut last_id = String::new();
+        let mut batch_count = 0;
+        
+        loop {
+            batch_count += 1;
+            
+            let query = if last_id.is_empty() {
+                format!(r#"
+                    query {{
+                        pools(first: {}, orderBy: id, orderDirection: asc) {{
+                            id
+                            token0 {{
+                                id
+                                symbol
+                                name
+                            }}
+                            token1 {{
+                                id
+                                symbol
+                                name
+                            }}
+                            feeTier
+                        }}
+                    }}
+                "#, batch_size)
+            } else {
+                format!(r#"
+                    query {{
+                        pools(first: {}, orderBy: id, orderDirection: asc, where: {{id_gt: "{}"}}) {{
+                            id
+                            token0 {{
+                                id
+                                symbol
+                                name
+                            }}
+                            token1 {{
+                                id
+                                symbol
+                                name
+                            }}
+                            feeTier
+                        }}
+                    }}
+                "#, batch_size, last_id)
+            };
+            
+            let response = self.execute_query::<V3PoolsResponse>(endpoint, &query).await?;
+            let pools = response.pools;
+            
+            println!("📊 Batch {}: Retrieved {} V3 pools (Total: {})", 
+                     batch_count, pools.len(), all_pools.len() + pools.len());
+            
+            if pools.is_empty() {
+                break;
+            }
+            
+            if let Some(last_pool) = pools.last() {
+                last_id = last_pool.id.clone();
+            }
+            
+            all_pools.extend(pools);
+            
+            // Small delay to be respectful to The Graph
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+        
+        Ok(all_pools)
+    }
+
+    /// Execute a GraphQL query
+    async fn execute_query<T>(&mut self, url: &str, query: &str) -> Result<T>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let body = json!({ "query": query });
+        
+        let response = self.client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        self.query_count += 1;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
+        }
+
+        let graph_response: GraphResponse<T> = response.json().await?;
+
+        if let Some(errors) = graph_response.errors {
+            let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
+            return Err(anyhow::anyhow!("GraphQL errors: {}", error_messages.join(", ")));
+        }
+
+        graph_response.data
+            .ok_or_else(|| anyhow::anyhow!("No data in GraphQL response"))
+    }
+
+    /// Convert Graph V2 pair to DexPool
+    pub fn graph_v2_pair_to_dex_pool(pair: &GraphV2Pair) -> Result<DexPool> {
+        Ok(DexPool {
+            address: pair.id.clone(),
+            protocol: "UniswapV2".to_string(),
+            token0: Some(pair.token0.id.clone()),
+            token1: Some(pair.token1.id.clone()),
+            chain_id: 1, // Ethereum mainnet
+        })
+    }
+
+    /// Convert Graph V3 pool to DexPool
+    pub fn graph_v3_pool_to_dex_pool(pool: &GraphV3Pool) -> Result<DexPool> {
+        Ok(DexPool {
+            address: pool.id.clone(),
+            protocol: "UniswapV3".to_string(),
+            token0: Some(pool.token0.id.clone()),
+            token1: Some(pool.token1.id.clone()),
+            chain_id: 1, // Ethereum mainnet
+        })
+    }
+
+    /// Populate database with pools from The Graph
+    pub async fn populate_database_from_graph(&mut self, pool_db: &PoolDatabase) -> Result<(u32, u32)> {
+        println!("🚀 Starting comprehensive pool data collection from The Graph...");
+        println!("📊 Free tier limit: 100,000 queries/month");
+        
+        // Clear existing pools to avoid duplicates
+        println!("🗑️  Clearing existing pools from database...");
+        pool_db.clear_pools()?;
+        
+        // Fetch V2 pairs
+        let v2_pairs = self.fetch_all_v2_pairs().await?;
+        let mut v2_pools = Vec::new();
+        
+        for pair in &v2_pairs {
+            if let Ok(pool) = Self::graph_v2_pair_to_dex_pool(pair) {
+                v2_pools.push(pool);
+            }
+        }
+        
+        println!("💾 Adding {} UniswapV2 pools to database...", v2_pools.len());
+        pool_db.add_pools(&v2_pools)?;
+        let v2_count = v2_pools.len() as u32;
+        
+        // Fetch V3 pools
+        let v3_pools_data = self.fetch_all_v3_pools().await?;
+        let mut v3_pools = Vec::new();
+        
+        for pool in &v3_pools_data {
+            if let Ok(pool) = Self::graph_v3_pool_to_dex_pool(pool) {
+                v3_pools.push(pool);
+            }
+        }
+        
+        println!("💾 Adding {} UniswapV3 pools to database...", v3_pools.len());
+        pool_db.add_pools(&v3_pools)?;
+        let v3_count = v3_pools.len() as u32;
+        
+        let total_queries = self.query_count();
+        println!("📈 Query usage: {}/{} queries ({:.1}% of free tier)", 
+                 total_queries, 100_000, (total_queries as f32 / 100_000.0) * 100.0);
+        
+        if total_queries > 100_000 {
+            println!("⚠️  Warning: Exceeded free tier query limit!");
+        } else {
+            println!("✅ Well within free tier limits!");
+        }
+        
+        Ok((v2_count, v3_count))
+    }
+}

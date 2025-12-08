@@ -1,66 +1,93 @@
-//! Multi-DEX Pool Detection Test
-//! 
-//! This binary tests the new multi-DEX pool scanning functionality
-//! to see how many pools each protocol has found.
-
 use anyhow::Result;
-use ethereum_transaction_pool_monitor::pool_db::PoolDatabase;
-use ethereum_transaction_pool_monitor::pool_fetcher::PoolFetcher;
-use std::env;
+use ethereum_transaction_pool_monitor::{eth_client::EthereumClient, pool_db::PoolDatabase};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     
-    println!("🚀 Multi-DEX Pool Detection Test");
-    println!("=================================");
+    println!("🎯 Testing Block-Aware Transaction Monitoring...\n");
     
-    let rpc_url = env::var("ETH_RPC_URL")
-        .unwrap_or_else(|_| "http://192.168.0.14:8545".to_string());
-    let db_path = "test_multi_dex.db";
+    let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://192.168.0.14:8545".to_string());
+    let db_path = "dex_pools.db";
+    let chain_id = 1;
     
-    println!("📡 RPC URL: {}", rpc_url);
-    println!("💾 Database: {}", db_path);
-    
-    // Remove old database for fresh test
-    let _ = std::fs::remove_file(db_path);
-    
-    // Initialize database
+    let client = EthereumClient::new(&rpc_url).await?;
     let pool_db = PoolDatabase::new(db_path)?;
-    let fetcher = PoolFetcher::new(&rpc_url);
     
-    println!("\n🔍 Starting Multi-DEX Pool Scan...");
-    println!("This will scan:");
-    println!("• UniswapV2 pools (from block 10,000,835)");
-    println!("• UniswapV3 pools (from block 12,369,739)");  
-    println!("• SushiSwap pools (from block 10,794,229)");
-    println!("• PancakeSwap pools (from block 15,614,590)");
-    println!("• ShibaSwap pools (from block 12,771,744)");
-    println!("• FraxSwap pools (from block 15,463,108)");
-    println!("• Curve Stableswap-NG pools (from block 17,000,000)");
-    println!("• Curve Twocrypto-NG pools (from block 18,000,000)");
-    println!();
+    println!("📡 Connected to Ethereum node");
     
-    // Run parallel multi-DEX scan
-    let total_pools = fetcher.fetch_pools_parallel(&pool_db, 1, None).await?;
+    // Get current block
+    let current_block = client.get_latest_block_number().await?;
+    println!("🔵 Current block: #{}", current_block);
+    println!("🎯 Next block target: #{}", current_block + 1);
     
-    println!("\n📊 Multi-DEX Scan Results");
-    println!("=========================");
+    // Get current pending transactions
+    let pending_txs = client.get_pending_transactions_paginated(&pool_db, chain_id, 0, 50).await?;
+    println!("📊 Current pending transactions: {}", pending_txs.len());
     
-    // Get total count
-    println!("🔹 Total: {} pools", total_pools);
-    
-    // Compare to previous results
-    println!("\n📈 Comparison with Previous Uniswap-only Results:");
-    println!("• Previous (Uniswap only): 11,611 pools");
-    println!("• New (Multi-DEX): {} pools", total_pools);
-    if total_pools > 11611 {
-        println!("• Improvement: +{} pools (+{:.1}%)", 
-                total_pools - 11611, 
-                ((total_pools as f64 - 11611.0) / 11611.0) * 100.0);
+    if !pending_txs.is_empty() {
+        println!("\n🔥 Top 5 transactions by gas price (targeting block #{}):", current_block + 1);
+        for (i, tx) in pending_txs.iter().take(5).enumerate() {
+            println!("   {}. {} | {} | Hash: {}", 
+                i + 1,
+                tx.gas_price_gwei,
+                tx.to.as_ref().map(|t| &t[..10]).unwrap_or("Contract"),
+                &tx.hash[..16]
+            );
+        }
     }
     
-    println!("\n✅ Multi-DEX scan complete!");
+    println!("\n⏳ Monitoring for new blocks (checking every 3 seconds)...");
+    println!("💡 Press Ctrl+C to stop");
     
-    Ok(())
+    let mut last_block = current_block;
+    let mut check_count = 0;
+    
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        check_count += 1;
+        
+        match client.get_latest_block_number().await {
+            Ok(new_block) => {
+                if new_block > last_block {
+                    println!("\n🆕 NEW BLOCK DETECTED!");
+                    println!("   📈 Block: #{} → #{}", last_block, new_block);
+                    println!("   🎯 New target: #{}", new_block + 1);
+                    
+                    // Get new pending transactions for the new target block
+                    match client.get_pending_transactions_paginated(&pool_db, chain_id, 0, 50).await {
+                        Ok(new_pending) => {
+                            println!("   📊 Transactions now targeting block #{}: {}", new_block + 1, new_pending.len());
+                            
+                            if !new_pending.is_empty() {
+                                println!("   🔥 Top 3 new candidates:");
+                                for (i, tx) in new_pending.iter().take(3).enumerate() {
+                                    println!("      {}. {} | Hash: {}", 
+                                        i + 1,
+                                        tx.gas_price_gwei,
+                                        &tx.hash[..16]
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("   ❌ Error fetching new transactions: {}", e);
+                        }
+                    }
+                    
+                    last_block = new_block;
+                } else {
+                    print!("📊 Check #{}: Block #{} (no change)", check_count, new_block);
+                    if check_count % 5 == 0 {
+                        println!(" - Still waiting...");
+                    } else {
+                        print!("\r");
+                    }
+                }
+            }
+            Err(e) => {
+                println!("\n❌ Error checking block: {}", e);
+            }
+        }
+    }
 }
