@@ -6,6 +6,7 @@ mod pool_fetcher;
 mod pool_loader;
 mod transaction_updater;
 mod transaction_decoder;
+mod graph_client;
 
 use app::AppState;
 use pool_loader::BackgroundPoolLoader;
@@ -392,16 +393,16 @@ async fn run_headless() {
     if force_refresh {
         tracing::info!("FORCE_POOL_REFRESH enabled - running comprehensive pool scan");
         tracing::info!("Starting complete blockchain scan for all DEX pools (existing: {})", existing_pool_count);
-        tracing::info!("This will scan ~25.5 million blocks and take approximately 15 minutes");
+        tracing::info!("This will collect pools from The Graph Protocol and take ~30 seconds");
         
-        if let Err(e) = app.sync_pools_from_node().await {
-            tracing::error!("Failed to sync DEX pools from node: {}", e);
+        if let Err(e) = app.sync_pools_comprehensive().await {
+            tracing::error!("Failed to sync DEX pools comprehensively: {}", e);
         } else {
-            tracing::info!("✅ Complete pool scan finished! Total pools: {}", app.pool_count);
+            tracing::info!("✅ Comprehensive pool collection finished! Total pools: {}", app.pool_count);
         }
-    } else if existing_pool_count < 1000 {
-        tracing::info!("Pool count low ({}), syncing DEX pools from Ethereum node", existing_pool_count);
-        if let Err(e) = app.sync_pools_from_node().await {
+    } else if existing_pool_count < 100_000 {
+        tracing::info!("Pool count low ({}), syncing DEX pools comprehensively from The Graph", existing_pool_count);
+        if let Err(e) = app.sync_pools_comprehensive().await {
             tracing::error!("Failed to sync DEX pools from node: {}", e);
         } else {
             tracing::info!("DEX pools synced from node. Count: {}", app.pool_count);

@@ -1,6 +1,7 @@
 use crate::eth_client::{EthereumClient, MempoolTransaction};
 use crate::pool_db::PoolDatabase;
 use crate::pool_fetcher::PoolFetcher;
+use crate::graph_client::GraphClient;
 use anyhow::Result;
 use std::collections::VecDeque;
 use chrono::Local;
@@ -62,6 +63,7 @@ pub struct AppState {
     pub client: EthereumClient,
     pub pool_db: PoolDatabase,
     pub pool_fetcher: PoolFetcher,
+    pub graph_client: GraphClient,
     pub chain_id: u32,
     pub status: String,
     pub is_running: bool,
@@ -76,6 +78,8 @@ pub struct AppState {
     pub v2_pools_found: u32,
     pub v3_pools_found: u32,
     pub v4_pools_found: u32,
+    pub sushi_pools_found: u32,
+    pub curve_pools_found: u32,
     pub pool_loading_progress_percent: u32,
     pub filter_mode: FilterMode,
     pub sort_field: SortField,
@@ -101,6 +105,8 @@ impl AppState {
         let client = EthereumClient::new(rpc_url).await?;
         let pool_db = PoolDatabase::new(db_path)?;
         let pool_fetcher = PoolFetcher::new(rpc_url);
+        let api_key = "79942a724597827e4cb8972667c0a355".to_string(); // The Graph API key
+        let graph_client = GraphClient::new(api_key);
         let pool_count = pool_db.pool_count().unwrap_or(0);
         
          // Get initial block number
@@ -113,6 +119,7 @@ impl AppState {
              client,
              pool_db,
              pool_fetcher,
+             graph_client,
              chain_id,
              status: "Starting transaction monitor...".to_string(),
              is_running: true,
@@ -127,6 +134,8 @@ impl AppState {
              v2_pools_found: 0,
              v3_pools_found: 0,
              v4_pools_found: 0,
+             sushi_pools_found: 0,
+             curve_pools_found: 0,
              pool_loading_progress_percent: 0,
              filter_mode: FilterMode::All,
              sort_field: SortField::Default,
@@ -212,6 +221,58 @@ impl AppState {
     }
 
     /// Sync DEX pools directly from Ethereum node
+    /// Comprehensive pool sync using The Graph Protocol (recommended)
+    pub async fn sync_pools_comprehensive(&mut self) -> Result<()> {
+        let existing_pool_count = self.pool_db.pool_count().unwrap_or(0);
+        
+        if existing_pool_count > 100_000 {
+            tracing::info!("Pool count already high ({}), skipping sync", existing_pool_count);
+            self.pools_loading_progress = format!("Pool database complete: {} pools", existing_pool_count);
+            self.pool_count = existing_pool_count;
+            return Ok(());
+        } else {
+            tracing::info!("Pool count low ({}), syncing pools from The Graph Protocol", existing_pool_count);
+        }
+        
+        self.is_loading_pools = true;
+        self.pools_found_count = 0;
+        self.needs_redraw = true;
+        
+        // Use The Graph Protocol for comprehensive collection
+        self.pools_loading_progress = "Collecting pools from The Graph Protocol...".to_string();
+        self.needs_redraw = true;
+        
+        let sushiswap_subgraph_id = "2tGWMrDha4164KkFAfkU3rDCtuxGb4q1emXmFdLLzJ8x";
+        let curve_subgraph_id = "3fy93eAT56UJsRCEht8iFhfi6wjHWXtZ9dnnbQmvFopF";
+        
+        match self.graph_client.populate_database_comprehensive(&self.pool_db, Some(sushiswap_subgraph_id), Some(curve_subgraph_id)).await {
+            Ok((v2_count, v3_count, v4_count, sushi_count, curve_count)) => {
+                let total = v2_count + v3_count + v4_count + sushi_count + curve_count;
+                tracing::info!("✅ Comprehensive sync complete: {} total pools", total);
+                self.pools_found_count = total;
+                self.v2_pools_found = v2_count;
+                self.v3_pools_found = v3_count; 
+                self.v4_pools_found = v4_count;
+                self.sushi_pools_found = sushi_count;
+                self.curve_pools_found = curve_count;
+                self.pool_count = total;
+                self.pools_loading_progress = format!("✅ Complete: {} pools (V2:{} V3:{} V4:{} Sushi:{} Curve:{})", 
+                    total, v2_count, v3_count, v4_count, sushi_count, curve_count);
+                self.last_pool_sync = Local::now().format("%H:%M:%S").to_string();
+                self.needs_redraw = true;
+            }
+            Err(e) => {
+                tracing::error!("Failed to sync pools comprehensively: {}", e);
+                self.pools_loading_progress = format!("❌ Sync failed: {}", e);
+                self.needs_redraw = true;
+            }
+        }
+        
+        self.is_loading_pools = false;
+        Ok(())
+    }
+
+    /// Legacy pool sync using RPC calls (slower, limited coverage)
     pub async fn sync_pools_from_node(&mut self) -> Result<()> {
         // Check if we should force a complete pool refresh
         let force_refresh = std::env::var("FORCE_POOL_REFRESH").is_ok();
