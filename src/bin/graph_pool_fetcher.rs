@@ -1,13 +1,14 @@
 //! The Graph Pool Fetcher
 //! 
-//! This binary fetches all UniswapV2, UniswapV3, and UniswapV4 pools from The Graph Protocol
+//! This binary fetches pools from all supported DEX protocols from The Graph Protocol
 //! and populates our database with comprehensive pool data.
 //!
 //! Features:
 //! - Fetches ~100,000+ UniswapV2 pairs
 //! - Fetches ~50,000+ UniswapV3 pools
-//! - Fetches UniswapV4 pools  
-//! - Uses ~150-200 queries (well within 100,000 free tier)
+//! - Fetches ~17,000+ UniswapV4 pools  
+//! - Fetches Curve liquidity pools
+//! - Uses optimized queries (well within 100,000 free tier)
 //! - Progress tracking and query usage monitoring
 
 use anyhow::Result;
@@ -20,7 +21,7 @@ async fn main() -> Result<()> {
     println!("🔗 The Graph Pool Data Collection");
     println!("=================================");
     println!("📡 Using The Graph Protocol's free tier");
-            println!("🎯 Target: 150,000+ pools from Uniswap V2/V3/V4");
+            println!("🎯 Target: 600,000+ pools from Uniswap V2/V3/V4 + SushiSwap + Curve");
     println!("📊 Query budget: 100,000 free queries/month");
     println!();
 
@@ -37,10 +38,14 @@ async fn main() -> Result<()> {
     let v2_count = pool_db.get_pool_count_by_protocol("UniswapV2").unwrap_or(0);
     let v3_count = pool_db.get_pool_count_by_protocol("UniswapV3").unwrap_or(0);
     let v4_count = pool_db.get_pool_count_by_protocol("UniswapV4").unwrap_or(0);
+    let sushi_count = pool_db.get_pool_count_by_protocol("SushiSwap").unwrap_or(0);
+    let curve_count = pool_db.get_pool_count_by_protocol("Curve").unwrap_or(0);
     
     println!("   - UniswapV2: {}", v2_count);
     println!("   - UniswapV3: {}", v3_count);
     println!("   - UniswapV4: {}", v4_count);
+    println!("   - SushiSwap: {}", sushi_count);
+    println!("   - Curve: {}", curve_count);
     println!();
 
     // Create Graph client with API key
@@ -51,8 +56,11 @@ async fn main() -> Result<()> {
     println!("🚀 Starting comprehensive pool data collection...");
     let start_time = std::time::Instant::now();
     
-    // Fetch all pools from The Graph with optimized progressive writes
-    let (final_v2_count, final_v3_count, final_v4_count) = graph_client.populate_database_from_graph_optimized(&pool_db).await?;
+    // Fetch all pools from The Graph with comprehensive coverage including SushiSwap and Curve
+    let sushiswap_subgraph_id = "2tGWMrDha4164KkFAfkU3rDCtuxGb4q1emXmFdLLzJ8x";
+    let curve_subgraph_id = "3fy93eAT56UJsRCEht8iFhfi6wjHWXtZ9dnnbQmvFopF";
+    let (final_v2_count, final_v3_count, final_v4_count, final_sushi_count, final_curve_count) = 
+        graph_client.populate_database_comprehensive(&pool_db, Some(sushiswap_subgraph_id), Some(curve_subgraph_id)).await?;
     
     let duration = start_time.elapsed();
     println!();
@@ -65,7 +73,9 @@ async fn main() -> Result<()> {
     println!("🔗 UniswapV2 pairs: {} (+{})", final_v2_count, final_v2_count - v2_count);
     println!("🔗 UniswapV3 pools: {} (+{})", final_v3_count, final_v3_count - v3_count);
     println!("🔗 UniswapV4 pools: {} (+{})", final_v4_count, final_v4_count - v4_count);
-    println!("🔗 Total pools: {}", final_v2_count + final_v3_count + final_v4_count);
+    println!("🔗 SushiSwap pools: {} (+{})", final_sushi_count, final_sushi_count - sushi_count);
+    println!("🔗 Curve pools: {} (+{})", final_curve_count, final_curve_count - curve_count);
+    println!("🔗 Total pools: {}", final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count);
     println!("📈 Queries used: {}/100,000 ({:.2}%)", 
              graph_client.query_count(), 
              (graph_client.query_count() as f32 / 100_000.0) * 100.0);
@@ -75,16 +85,16 @@ async fn main() -> Result<()> {
     println!("💾 Database verification: {} pools stored", final_db_count);
     
     // Success criteria
-    if final_v2_count + final_v3_count + final_v4_count >= 100_000 {
+    if final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count >= 100_000 {
         println!();
         println!("🎉 SUCCESS! Database now contains 100,000+ pools");
         println!("🔍 Ready for comprehensive MEV opportunity detection!");
-        println!("📊 Coverage: Major Uniswap V2/V3/V4 liquidity pools");
+        println!("📊 Coverage: Major Uniswap V2/V3/V4 + SushiSwap + Curve liquidity pools");
         println!("💰 Cost: FREE (within The Graph's free tier)");
     } else {
         println!();
         println!("⚠️  Expected more pools, but still substantial coverage:");
-        println!("              Current: {} pools", final_v2_count + final_v3_count + final_v4_count);
+        println!("   Current: {} pools", final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count);
         println!("   This should still provide good MEV detection coverage!");
     }
     

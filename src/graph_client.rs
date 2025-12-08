@@ -66,23 +66,27 @@ pub struct V2PairsResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphSushiPair {
     pub id: String,
-    pub token0: GraphToken,
-    pub token1: GraphToken,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: Vec<GraphToken>,
+    pub name: Option<String>,
 }
 
 /// Curve Pool from The Graph
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphCurvePool {
     pub id: String,
-    pub coins: Vec<GraphToken>,
-    #[serde(rename = "name")]
-    pub pool_name: Option<String>,
+    #[serde(rename = "inputTokens")]
+    pub input_tokens: Vec<GraphToken>,
+    #[serde(rename = "outputToken")]
+    pub output_token: Option<GraphToken>,
+    pub name: Option<String>,
 }
 
 /// SushiSwap pairs response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SushiPairsResponse {
-    pub pairs: Vec<GraphSushiPair>,
+    #[serde(rename = "liquidityPools")]
+    pub liquidity_pools: Vec<GraphSushiPair>,
 }
 
 /// UniswapV3 pools response  
@@ -97,10 +101,11 @@ pub struct V4PoolsResponse {
     pub pools: Vec<GraphV4Pool>,
 }
 
-/// Curve pools response  
+/// Curve pools response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CurvePoolsResponse {
-    pub pools: Vec<GraphCurvePool>,
+    #[serde(rename = "liquidityPools")]
+    pub liquidity_pools: Vec<GraphCurvePool>,
 }
 
 impl GraphClient {
@@ -143,11 +148,7 @@ impl GraphClient {
             }
         };
 
-        // Check if already complete
-        if pool_db.is_collection_complete("UniswapV2")? {
-            println!("✅ V2 collection appears complete ({} pools). Skipping.", total_pairs);
-            return Ok(total_pairs);
-        }
+        // No artificial completion check - collect all pools
         
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
@@ -275,11 +276,7 @@ impl GraphClient {
             }
         };
 
-        // Check if already complete
-        if pool_db.is_collection_complete("UniswapV3")? {
-            println!("✅ V3 collection appears complete ({} pools). Skipping.", total_pools);
-            return Ok(total_pools);
-        }
+        // No artificial completion check - collect all pools
         
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
@@ -408,11 +405,7 @@ impl GraphClient {
             }
         };
 
-        // Check if already complete
-        if pool_db.is_collection_complete("SushiSwap")? {
-            println!("✅ SushiSwap collection appears complete ({} pools). Skipping.", total_pairs);
-            return Ok(total_pairs);
-        }
+        // No artificial completion check - collect all pools
         
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
@@ -423,20 +416,20 @@ impl GraphClient {
             let query = if last_id.is_empty() {
                 format!(r#"
                     query {{
-                        pairs(first: {}) {{
+                        liquidityPools(first: {}) {{
                             id
-                            token0 {{ id symbol name }}
-                            token1 {{ id symbol name }}
+                            name
+                            inputTokens {{ id symbol name }}
                         }}
                     }}
                 "#, BATCH_SIZE)
             } else {
                 format!(r#"
                     query {{
-                        pairs(first: {}, where: {{id_gt: "{}"}}) {{
+                        liquidityPools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
-                            token0 {{ id symbol name }}
-                            token1 {{ id symbol name }}
+                            name
+                            inputTokens {{ id symbol name }}
                         }}
                     }}
                 "#, BATCH_SIZE, last_id)
@@ -448,7 +441,7 @@ impl GraphClient {
             
             let pairs = loop {
                 match self.execute_query_internal::<SushiPairsResponse>(&endpoint, &query).await {
-                    Ok(response) => break response.pairs,
+                    Ok(response) => break response.liquidity_pools,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
@@ -539,11 +532,7 @@ impl GraphClient {
             }
         };
 
-        // Check if already complete (lower threshold for Curve as it has fewer pools)
-        if total_pools >= 5_000 { // Curve has fewer pools than Uniswap
-            println!("✅ Curve collection appears complete ({} pools). Skipping.", total_pools);
-            return Ok(total_pools);
-        }
+        // No artificial completion check - collect all pools
         
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
@@ -554,9 +543,10 @@ impl GraphClient {
             let query = if last_id.is_empty() {
                 format!(r#"
                     query {{
-                        pools(first: {}) {{
+                        liquidityPools(first: {}) {{
                             id
-                            coins {{ id symbol name }}
+                            inputTokens {{ id symbol name }}
+                            outputToken {{ id symbol name }}
                             name
                         }}
                     }}
@@ -564,9 +554,10 @@ impl GraphClient {
             } else {
                 format!(r#"
                     query {{
-                        pools(first: {}, where: {{id_gt: "{}"}}) {{
+                        liquidityPools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
-                            coins {{ id symbol name }}
+                            inputTokens {{ id symbol name }}
+                            outputToken {{ id symbol name }}
                             name
                         }}
                     }}
@@ -579,7 +570,7 @@ impl GraphClient {
             
             let pools_data = loop {
                 match self.execute_query_internal::<CurvePoolsResponse>(&endpoint, &query).await {
-                    Ok(response) => break response.pools,
+                    Ok(response) => break response.liquidity_pools,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
@@ -671,11 +662,7 @@ impl GraphClient {
             }
         };
 
-        // Check if already complete
-        if pool_db.is_collection_complete("UniswapV4")? {
-            println!("✅ V4 collection appears complete ({} pools). Skipping.", total_pools);
-            return Ok(total_pools);
-        }
+        // No artificial completion check - collect all pools
         
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
@@ -1026,11 +1013,15 @@ impl GraphClient {
 
     /// Convert Graph SushiSwap pair to DexPool
     pub fn graph_sushi_pair_to_dex_pool(pair: &GraphSushiPair) -> Result<DexPool> {
+        // Extract token addresses from inputTokens array (should have 2 tokens for pairs)
+        let token0 = pair.input_tokens.get(0).map(|t| t.id.clone());
+        let token1 = pair.input_tokens.get(1).map(|t| t.id.clone());
+        
         Ok(DexPool {
             address: pair.id.clone(),
             protocol: "SushiSwap".to_string(),
-            token0: Some(pair.token0.id.clone()),
-            token1: Some(pair.token1.id.clone()),
+            token0,
+            token1,
             chain_id: 1, // Ethereum mainnet
         })
     }
@@ -1038,10 +1029,10 @@ impl GraphClient {
     /// Convert Graph Curve pool to DexPool
     pub fn graph_curve_pool_to_dex_pool(pool: &GraphCurvePool) -> Result<DexPool> {
         // Curve pools can have multiple tokens, we'll use the first two if available
-        let (token0, token1) = if pool.coins.len() >= 2 {
-            (Some(pool.coins[0].id.clone()), Some(pool.coins[1].id.clone()))
-        } else if pool.coins.len() == 1 {
-            (Some(pool.coins[0].id.clone()), None)
+        let (token0, token1) = if pool.input_tokens.len() >= 2 {
+            (Some(pool.input_tokens[0].id.clone()), Some(pool.input_tokens[1].id.clone()))
+        } else if pool.input_tokens.len() == 1 {
+            (Some(pool.input_tokens[0].id.clone()), None)
         } else {
             (None, None)
         };
