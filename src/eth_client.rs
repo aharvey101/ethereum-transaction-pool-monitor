@@ -311,7 +311,7 @@ impl EthereumClient {
     }
 
     /// Fetch full transaction details by hash
-    async fn get_transaction_by_hash(&self, hash: &str, pool_db: &PoolDatabase, chain_id: u32) -> Result<MempoolTransaction> {
+    pub async fn get_transaction_by_hash(&self, hash: &str, pool_db: &PoolDatabase, chain_id: u32) -> Result<MempoolTransaction> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionByHash",

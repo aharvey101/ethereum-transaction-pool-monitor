@@ -515,7 +515,7 @@ impl DirectMempoolExecutor {
                     Ok(Ok(receipt)) => {
                         let confirmation_time = start_time.elapsed();
                         let gas_used = receipt.gas_used;
-                        let effective_gas_price = receipt.effective_gas_price.unwrap_or(max_fee_per_gas);
+                        let effective_gas_price = receipt.effective_gas_price;
                         
                         info!("✅ Transaction confirmed: {} in {:?} (gas: {}, price: {})", 
                              tx_hash_str, confirmation_time, gas_used, effective_gas_price);
@@ -698,7 +698,7 @@ impl DirectMempoolExecutor {
         let mut swap_events_parsed = 0;
 
         // Parse swap events from transaction logs
-        for log in &receipt.inner.logs {
+        for log in receipt.inner.logs() {
             if let Ok(swap_event) = Swap::decode_log(log, true) {
                 swap_events_parsed += 1;
                 

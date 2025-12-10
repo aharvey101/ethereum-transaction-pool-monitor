@@ -447,13 +447,11 @@ impl MevBotRunner {
             crate::mev_bundle_builder::ExecutionMethod::SimulationOnly
         };
 
-        let mut bundle_builder = MevBundleBuilder::new(
-            (*eth_client).clone(),
-            execution_method,
-            rpc_url.clone(),
-        );
-        bundle_builder.set_max_gas_price(config.max_gas_price);
-        bundle_builder.set_min_profit_threshold(U256::from((config.min_profit_threshold * 1e18) as u64));
+        let mut bundle_builder = MevBundleBuilder::new();
+
+        // Configure the bundle builder
+        bundle_builder.max_gas_price = config.max_gas_price;
+        bundle_builder.min_profit_threshold = U256::from((config.min_profit_threshold * 1e18) as u64);
 
         let mut interval = interval(Duration::from_millis(100)); // Check every 100ms
         
@@ -521,11 +519,11 @@ impl MevBotRunner {
         let start_time = Instant::now();
         debug!("Executing opportunity for block {}: {}", target_block, opportunity.victim_tx.hash);
 
-        // Build MEV bundle
-        let bundle = match bundle_builder.build_sandwich_bundle(&opportunity, target_block).await {
-            Ok(bundle) => bundle,
+        // Execute sandwich attack using the specified method
+        let submission_result = match bundle_builder.execute_sandwich_attack(&opportunity, execution_method.clone()).await {
+            Ok(result) => result,
             Err(e) => {
-                warn!("Failed to build bundle for {}: {}", opportunity.victim_tx.hash, e);
+                warn!("Failed to execute sandwich for {}: {}", opportunity.victim_tx.hash, e);
                 return Err(e);
             }
         };
@@ -535,17 +533,6 @@ impl MevBotRunner {
             let mut stats_lock = stats.write().await;
             stats_lock.bundles_built += 1;
         }
-
-        // Submit bundle
-        let submission_result = match bundle_builder.submit_bundle(&bundle).await {
-            Ok(result) => result,
-            Err(e) => {
-                error!("Failed to submit bundle: {}", e);
-                let mut stats_lock = stats.write().await;
-                stats_lock.failed_submissions += 1;
-                return Err(e);
-            }
-        };
 
         // Update stats based on result
         {
