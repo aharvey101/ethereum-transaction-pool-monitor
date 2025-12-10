@@ -1544,6 +1544,7 @@ dependencies = [
  "hex",
  "indicatif",
  "lazy_static",
+ "rand 0.8.5",
  "ratatui",
  "reqwest 0.11.27",
  "rusqlite",

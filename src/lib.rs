@@ -6,3 +6,4 @@ pub mod transaction_decoder;
 pub mod graph_client;
 pub mod sandwich_pool_integration;
 pub mod pool_state_fetcher;
+pub mod enhanced_revm_simulator;

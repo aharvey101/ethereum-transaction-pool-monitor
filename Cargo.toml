@@ -44,6 +44,14 @@ path = "src/bin/test_dex_detection.rs"
 name = "test_sandwich_integration"
 path = "src/bin/test_sandwich_integration.rs"
 
+[[bin]]
+name = "test_enhanced_revm"
+path = "src/bin/test_enhanced_revm.rs"
+
+[[bin]]
+name = "test_multi_dex_comprehensive"
+path = "src/bin/test_multi_dex_comprehensive.rs"
+
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
@@ -66,3 +74,4 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 csv = "1.3"
 indicatif = "0.17"
 env_logger = "0.10"
+rand = "0.8"
