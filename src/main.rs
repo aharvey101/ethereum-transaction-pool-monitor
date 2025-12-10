@@ -197,22 +197,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Setup logging to both file and stdout
+/// Setup logging to stdout for real-time visibility
 fn setup_logging() {
-    let file_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::sync::Arc::new(
-            std::fs::File::create("ethereum-monitor.log").unwrap_or_else(|_| {
-                eprintln!("Warning: Could not create log file");
-                std::fs::File::open("/dev/null").unwrap()
-            })
-        ))
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stdout)
         .with_target(true)
-        .with_level(true);
+        .with_level(true)
+        .with_thread_ids(false)
+        .with_thread_names(false);
     
     let subscriber = tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")))
-        .with(file_layer);
+        .with(stdout_layer);
     
     tracing::subscriber::set_global_default(subscriber)
         .expect("Failed to set global default subscriber");

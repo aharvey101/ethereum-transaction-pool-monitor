@@ -24,7 +24,9 @@ path = "src/bin/graph_pool_fetcher.rs"
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
-alloy = { version = "0.7", features = ["provider-http", "provider-ws", "rpc-types-eth", "signer-local", "pubsub", "sol-types"] }
+tokio-tungstenite = "0.20"
+url = "2.0"
+alloy = { version = "0.7", features = ["provider-http", "rpc-types-eth", "signer-local", "sol-types"] }
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"
 serde = { version = "1", features = ["derive"] }

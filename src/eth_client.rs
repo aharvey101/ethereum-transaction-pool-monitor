@@ -3,6 +3,7 @@ use crate::pool_db::PoolDatabase;
 use crate::transaction_decoder::SwapInfo;
 use serde_json::{self, json};
 use std::sync::Arc;
+use tracing::debug;
 
 /// Type of DeFi activity detected in a transaction
 #[derive(Clone, Debug, PartialEq)]
@@ -609,29 +610,90 @@ impl EthereumClient {
 
     /// Subscribe to pending transactions via WebSocket for real-time mempool monitoring
     pub async fn subscribe_pending_transactions(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>> {
-        // Convert HTTP URL to WebSocket URL
-        let ws_url = self.rpc_url.replace("http://", "ws://").replace("https://", "wss://");
+        // Convert HTTP URL to WebSocket URL and change port from 8545 to 8547
+        let mut ws_url = self.rpc_url.replace("http://", "ws://").replace("https://", "wss://");
         
-        // Create WebSocket provider
-        use alloy::{providers::{Provider, ProviderBuilder, WsConnect}};
-        let ws = WsConnect::new(ws_url);
-        let provider = ProviderBuilder::new().on_ws(ws).await?;
+        // Change port from 8545 to 8547 for WebSocket
+        if ws_url.contains(":8545") {
+            ws_url = ws_url.replace(":8545", ":8547");
+        }
+        
+        debug!("📡 WebSocket URL: {}", ws_url);
         
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         
-        // Subscribe to pending transactions
-        let subscription = provider.subscribe_pending_transactions().await?;
+        // Use tokio-tungstenite for reliable WebSocket connection
+        use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+        use futures_util::{SinkExt, StreamExt};
         
-        // Spawn task to handle subscription
+        let url = url::Url::parse(&ws_url)?;
+        
         tokio::spawn(async move {
-            let mut stream = subscription.into_stream();
-            
-            use futures_util::StreamExt;
-            while let Some(tx_hash) = stream.next().await {
-                let hash_str = format!("0x{:x}", tx_hash);
-                if tx.send(hash_str).is_err() {
-                    break; // Receiver dropped
+            loop {
+                // Attempt WebSocket connection with retry logic
+                match connect_async(&url).await {
+                    Ok((ws_stream, _)) => {
+                        debug!("✅ WebSocket connected successfully");
+                        let (mut write, mut read) = ws_stream.split();
+                        
+                        // Subscribe to pending transactions
+                        let subscribe_msg = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "eth_subscribe",
+                            "params": ["newPendingTransactions"],
+                            "id": 1
+                        });
+                        
+                        if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
+                            debug!("❌ Failed to send subscription: {}", e);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        
+                        // Process incoming messages
+                        while let Some(message) = read.next().await {
+                            match message {
+                                Ok(Message::Text(text)) => {
+                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                        // Handle subscription confirmation
+                                        if json.get("result").is_some() && json.get("id") == Some(&serde_json::json!(1)) {
+                                            debug!("✅ Subscription confirmed");
+                                            continue;
+                                        }
+                                        
+                                        // Handle new pending transaction notifications
+                                        if let Some(params) = json.get("params") {
+                                            if let Some(result) = params.get("result") {
+                                                if let Some(tx_hash) = result.as_str() {
+                                                    if tx.send(tx_hash.to_string()).is_err() {
+                                                        debug!("📡 Receiver dropped, closing WebSocket");
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(Message::Close(_)) => {
+                                    debug!("📡 WebSocket closed by server");
+                                    break;
+                                }
+                                Err(e) => {
+                                    debug!("❌ WebSocket error: {}", e);
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("❌ WebSocket connection failed: {}", e);
+                    }
                 }
+                
+                // Wait before reconnecting
+                debug!("🔄 Reconnecting WebSocket in 5 seconds...");
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
         

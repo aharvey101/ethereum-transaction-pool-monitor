@@ -450,3 +450,64 @@ mod tests {
         Ok(())
     }
 }
+
+impl PoolDatabase {
+    pub fn find_pool_by_tokens(&self, token0: &str, token1: &str) -> Result<Vec<DexPool>> {
+        let normalized_token0 = token0.to_lowercase();
+        let normalized_token1 = token1.to_lowercase();
+        
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT address, protocol, token0, token1, chain_id 
+             FROM pools 
+             WHERE (LOWER(token0) = ?1 AND LOWER(token1) = ?2)
+                OR (LOWER(token0) = ?2 AND LOWER(token1) = ?1)
+             ORDER BY protocol ASC
+             LIMIT 5"
+        )?;
+
+        let pool_iter = stmt.query_map(&[&normalized_token0, &normalized_token1], |row| {
+            Ok(DexPool {
+                address: row.get(0)?,
+                protocol: row.get(1)?,
+                token0: row.get(2).ok(),
+                token1: row.get(3).ok(), 
+                chain_id: row.get(4)?,
+            })
+        })?;
+
+        let mut pools = Vec::new();
+        for pool in pool_iter {
+            pools.push(pool?);
+        }
+
+        Ok(pools)
+    }
+
+    pub fn get_pool_by_address(&self, address: &str) -> Result<Option<DexPool>> {
+        let normalized_address = address.to_lowercase();
+        
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT address, protocol, token0, token1, chain_id 
+             FROM pools 
+             WHERE LOWER(address) = ?1
+             LIMIT 1"
+        )?;
+
+        let mut pool_iter = stmt.query_map(&[&normalized_address], |row| {
+            Ok(DexPool {
+                address: row.get(0)?,
+                protocol: row.get(1)?,
+                token0: row.get(2).ok(),
+                token1: row.get(3).ok(), 
+                chain_id: row.get(4)?,
+            })
+        })?;
+
+        match pool_iter.next() {
+            Some(pool) => Ok(Some(pool?)),
+            None => Ok(None),
+        }
+    }
+}
