@@ -4,11 +4,11 @@
 /// Unlike Flashbots bundles, these transactions are immediately visible in the public mempool.
 
 use alloy::{
-    primitives::{Address, U256, Bytes, TxHash, Log},
+    primitives::{Address, U256, Bytes, TxHash},
     providers::{Provider, ProviderBuilder},
     rpc::types::{TransactionRequest, TransactionInput, TransactionReceipt},
     signers::local::PrivateKeySigner,
-    network::{EthereumWallet, TransactionBuilder},
+    network::{EthereumWallet},
     sol_types::{SolEvent, sol},
 };
 use alloy_primitives::TxKind;
@@ -16,7 +16,7 @@ use anyhow::Result;
 use reqwest::Url;
 use std::{str::FromStr, collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::{info, debug, error, warn, trace, instrument};
+use tracing::{info, debug, error, warn, trace};
 use serde_json::json;
 
 // Define common DEX events for profit calculation
@@ -64,6 +64,7 @@ pub struct ProfitCalculation {
     pub swap_events_parsed: usize,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     pub max_attempts: usize,
@@ -355,6 +356,7 @@ impl DirectMempoolExecutor {
     }
 
     /// Log comprehensive transaction metrics for monitoring
+    #[allow(dead_code)]
     fn log_transaction_metrics(&self, result: &TransactionExecutionResult, operation: &str) {
         let metrics = json!({
             "operation": operation,
@@ -581,13 +583,13 @@ impl DirectMempoolExecutor {
     /// Create sandwich frontrun transaction
     pub async fn create_frontrun_transaction(
         &self,
-        pool_address: Address,
+        _pool_address: Address,
         token_in: Address,
         token_out: Address,
         amount_in: U256,
         min_amount_out: U256,
-        gas_price: u128,
-        gas_limit: u64,
+        _gas_price: u128,
+        _gas_limit: u64,
     ) -> Result<Vec<u8>> {
         // For now, create a simple swap transaction calldata
         // This would need to be adapted for your specific MEV contract
@@ -699,7 +701,16 @@ impl DirectMempoolExecutor {
 
         // Parse swap events from transaction logs
         for log in receipt.inner.logs() {
-            if let Ok(swap_event) = Swap::decode_log(log, true) {
+            // Convert from RPC log to primitives log
+            let primitive_log = alloy_primitives::Log {
+                address: log.address(),
+                data: alloy_primitives::LogData::new(
+                    log.topics().to_vec(),
+                    log.data().data.clone()
+                ).unwrap(),
+            };
+            
+            if let Ok(swap_event) = Swap::decode_log(&primitive_log, true) {
                 swap_events_parsed += 1;
                 
                 // Accumulate token flows

@@ -4,21 +4,20 @@
 /// mempool monitoring, opportunity detection, bundle building, and submission.
 
 use crate::{
-    mempool_monitor::{MempoolMonitor, MempoolOpportunity, MonitorConfig},
-    mev_bundle_builder::{MevBundleBuilder, BundleSubmissionResult},
-    flash_loan_manager::FlashLoanManager,
+    mempool_monitor::{MempoolMonitor, MempoolOpportunity},
+    mev_bundle_builder::MevBundleBuilder,
     eth_client::EthereumClient,
     pool_db::PoolDatabase,
 };
-use alloy_primitives::{Address, U256};
-use anyhow::{Result, anyhow};
+use alloy_primitives::U256;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{SystemTime, Duration, Instant};
 use tokio::{
     sync::{mpsc, RwLock},
-    time::{sleep, interval},
+    time::interval,
     select,
 };
 use tracing::{info, warn, error, debug};
@@ -68,6 +67,7 @@ impl Default for BotConfig {
 }
 
 /// MEV bot execution statistics
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct BotStats {
     pub start_time: SystemTime,
@@ -137,6 +137,7 @@ pub struct BotMetrics {
 }
 
 /// Active bundle tracking
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ActiveBundle {
     opportunity: MempoolOpportunity,
@@ -418,7 +419,7 @@ impl MevBotRunner {
     /// Main bundle execution loop (static method)
     async fn execute_bundles_loop(
         config: BotConfig,
-        rpc_url: String,
+        _rpc_url: String,
         eth_client: Arc<EthereumClient>,
         stats: Arc<RwLock<BotStats>>,
         active_bundles: Arc<RwLock<HashMap<String, ActiveBundle>>>,
@@ -450,7 +451,7 @@ impl MevBotRunner {
         let mut bundle_builder = MevBundleBuilder::new();
 
         // Configure the bundle builder
-        bundle_builder.max_gas_price = config.max_gas_price;
+        bundle_builder.max_gas_price = config.max_gas_price.to_string().parse::<u128>().unwrap_or(200_000_000_000);
         bundle_builder.min_profit_threshold = U256::from((config.min_profit_threshold * 1e18) as u64);
 
         let mut interval = interval(Duration::from_millis(100)); // Check every 100ms
@@ -501,7 +502,7 @@ impl MevBotRunner {
                     continue;
                 }
 
-                if let Err(e) = Self::execute_opportunity(&bundle_builder, opportunity, target_block, &stats, &active_bundles).await {
+                if let Err(e) = Self::execute_opportunity(&bundle_builder, opportunity, execution_method.clone(), target_block, &stats, &active_bundles).await {
                     error!("Failed to execute opportunity: {}", e);
                 }
             }
@@ -512,6 +513,7 @@ impl MevBotRunner {
     async fn execute_opportunity(
         bundle_builder: &MevBundleBuilder,
         opportunity: MempoolOpportunity,
+        execution_method: crate::mev_bundle_builder::ExecutionMethod,
         target_block: u64,
         stats: &Arc<RwLock<BotStats>>,
         active_bundles: &Arc<RwLock<HashMap<String, ActiveBundle>>>,

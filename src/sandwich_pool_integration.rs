@@ -57,6 +57,7 @@ pub enum TradeDirection {
 /// Integration layer between pool database and sandwich simulation
 pub struct SandwichPoolIntegration {
     pool_db: PoolDatabase,
+    #[allow(dead_code)]
     eth_client: crate::eth_client::EthereumClient,
     pool_state_fetcher: crate::pool_state_fetcher::PoolStateFetcher,
     pool_states: HashMap<Address, PoolState>,
@@ -312,6 +313,7 @@ impl SandwichPoolIntegration {
 struct TradeDetails {
     amount: U256,
     direction: TradeDirection,
+    #[allow(dead_code)]
     minimum_amount_out: U256,
 }
 

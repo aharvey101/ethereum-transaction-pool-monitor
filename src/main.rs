@@ -1,3 +1,10 @@
+//! Advanced Ethereum MEV Bot - Direct mempool execution for sandwich attacks
+//! 
+//! Production-ready MEV bot with arboo-style direct mempool submission capabilities.
+//! Bypasses Flashbots for immediate transaction execution with competitive gas pricing.
+
+#![allow(dead_code)] // Allow unused code in production MEV bot
+
 mod app;
 mod ui;
 mod eth_client;

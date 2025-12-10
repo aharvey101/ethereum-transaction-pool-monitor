@@ -12,6 +12,7 @@ use crate::{
 };
 
 /// Enhanced sandwich simulation result with detailed analytics
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct EnhancedSandwichResult {
     pub pool_address: Address,
@@ -36,6 +37,7 @@ pub struct EnhancedSandwichResult {
 }
 
 /// Pool selection criteria for sandwich targeting
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct PoolSelectionCriteria {
     pub min_liquidity_usd: f64,
@@ -430,6 +432,7 @@ impl EnhancedSandwichSimulator {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct SandwichSequenceResult {
     success: bool,
@@ -442,6 +445,7 @@ struct SandwichSequenceResult {
     victim_impact: f64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct TradeResult {
     amount_out: U256,

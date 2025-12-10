@@ -770,6 +770,7 @@ impl GraphClient {
         Ok(total_pools)
     }
 
+    #[allow(dead_code)]
     async fn try_fetch_v2_from_endpoint(&mut self, endpoint: &str) -> Result<Vec<GraphV2Pair>> {
         
         let mut all_pairs = Vec::new();

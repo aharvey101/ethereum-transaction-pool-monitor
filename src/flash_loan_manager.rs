@@ -4,16 +4,17 @@
 /// Integrates with our sandwich execution engine to provide temporary capital for MEV opportunities.
 
 use alloy_primitives::{Address, U256, Bytes};
-use alloy_sol_types::{SolCall, SolInterface};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{info, warn, error, debug};
+use tracing::{info, warn, debug};
 
 /// Balancer V2 Vault contract address on Ethereum mainnet
+#[allow(dead_code)]
 pub const BALANCER_VAULT_ADDRESS: &str = "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
 
-/// WETH token address on Ethereum mainnet  
+/// Standard WETH contract address on Ethereum mainnet
+#[allow(dead_code)]
 pub const WETH_ADDRESS: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 /// Flash loan request for sandwich execution
@@ -39,6 +40,7 @@ pub struct SandwichExecutionData {
 }
 
 /// Flash loan execution result
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct FlashLoanResult {
     pub success: bool,
@@ -50,6 +52,7 @@ pub struct FlashLoanResult {
 }
 
 /// Balancer V2 Flash Loan Manager
+#[allow(dead_code)]
 pub struct FlashLoanManager {
     vault_address: Address,
     weth_address: Address,
@@ -154,7 +157,7 @@ impl FlashLoanManager {
     /// Get maximum flash loan amount available for a token
     async fn get_flash_loan_available_amount(
         &self,
-        eth_client: &crate::eth_client::EthereumClient,
+        _eth_client: &crate::eth_client::EthereumClient,
         token: Address,
     ) -> Result<U256> {
         // For simplicity, return a reasonable default amount
@@ -266,9 +269,10 @@ impl Default for FlashLoanManager {
 }
 
 /// Helper function to estimate required flash loan amount for sandwich
+#[allow(dead_code)]
 pub fn estimate_flash_loan_amount(
     sandwich_data: &SandwichExecutionData,
-    token: Address,
+    _token: Address,
 ) -> U256 {
     // Return the frontrun amount as the required flash loan
     // This is the capital we need to execute the frontrun transaction
@@ -276,10 +280,11 @@ pub fn estimate_flash_loan_amount(
 }
 
 /// Helper function to calculate expected profit after flash loan fees
+#[allow(dead_code)]
 pub fn calculate_net_profit_after_fees(
     gross_profit: U256,
-    flash_loan_amount: U256,
-    token: Address,
+    _flash_loan_amount: U256,
+    _token: Address,
 ) -> U256 {
     // Balancer V2 has 0% fees, so net profit = gross profit
     // Gas costs should be calculated separately

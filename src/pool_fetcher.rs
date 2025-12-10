@@ -137,10 +137,10 @@ impl PoolFetcher {
     /// Fetch UniswapV4 pools with progress callback
     /// NOTE: Uniswap V4 is still in development/testing phase
     /// This method will be updated when V4 is deployed to mainnet
-    pub async fn fetch_uniswap_v4_pools_with_progress(&self, pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
+    pub async fn fetch_uniswap_v4_pools_with_progress(&self, _pool_db: &PoolDatabase, _chain_id: u32, progress: Option<ProgressCallback>) -> Result<u32> {
         // NOTE: These are placeholder values - update when V4 is actually deployed
-        const UNISWAP_V4_FACTORY: &str = "0x0000000000000000000000000000000000000000"; // Placeholder - V4 not deployed yet
-        const UNISWAP_V4_DEPLOYMENT_BLOCK: u64 = 0; // Will be set when V4 deploys
+        const _UNISWAP_V4_FACTORY: &str = "0x0000000000000000000000000000000000000000"; // Placeholder - V4 not deployed yet
+        const _UNISWAP_V4_DEPLOYMENT_BLOCK: u64 = 0; // Will be set when V4 deploys
         
         tracing::warn!("Uniswap V4 is not yet deployed on mainnet - skipping V4 pool scanning");
         if let Some(ref cb) = progress {

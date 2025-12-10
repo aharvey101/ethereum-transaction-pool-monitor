@@ -11,8 +11,7 @@ use alloy_primitives::{Address, U256, Bytes};
 use alloy_sol_types::{SolCall, sol};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
-use tracing::{info, warn, error, debug};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct MevBundleBuilder {
@@ -120,12 +119,8 @@ impl MevBundleBuilder {
         executor: &DirectMempoolExecutor,
         aggressive_gas: bool,
     ) -> Result<BundleSubmissionResult> {
-        // Extract victim gas price (handle Option<U256>)
-        let victim_gas_price = if let Some(gas_price) = opportunity.victim_tx.gas_price {
-            gas_price.to_string().parse::<u128>().unwrap_or(20_000_000_000)
-        } else {
-            20_000_000_000 // 20 gwei default
-        };
+        // Extract victim gas price (handle U256)
+        let victim_gas_price = opportunity.victim_tx.gas_price.to_string().parse::<u128>().unwrap_or(20_000_000_000);
         let gas_premium = if aggressive_gas { 20 } else { 5 }; // 20% vs 5%
         let frontrun_gas_price = victim_gas_price + (victim_gas_price * gas_premium / 100);
 
@@ -211,8 +206,8 @@ impl MevBundleBuilder {
     /// Execute sandwich via Flashbots bundle
     async fn execute_flashbots_bundle(
         &self,
-        opportunity: &MempoolOpportunity,
-        api_key: &str,
+        _opportunity: &MempoolOpportunity,
+        _api_key: &str,
     ) -> Result<BundleSubmissionResult> {
         warn!("🏛️ Flashbots execution not fully implemented - using simulation");
         
@@ -236,11 +231,7 @@ impl MevBundleBuilder {
         info!("🧪 Simulating sandwich attack...");
 
         let estimated_gas = 550_000u64; // Conservative estimate
-        let gas_price = if let Some(gas_price) = opportunity.victim_tx.gas_price {
-            gas_price.to_string().parse::<u128>().unwrap_or(20_000_000_000)
-        } else {
-            20_000_000_000 // 20 gwei default
-        };
+        let gas_price = opportunity.victim_tx.gas_price.to_string().parse::<u128>().unwrap_or(20_000_000_000);
         let gas_cost_eth = (estimated_gas as u128 * gas_price) as f64 / 1e18;
         let estimated_profit = opportunity.estimated_profit_eth - gas_cost_eth;
 
@@ -356,7 +347,7 @@ pub fn create_dummy_mempool_tx() -> MempoolTransaction {
         from: Address::ZERO,
         to: Some(Address::ZERO),
         value: U256::ZERO,
-        gas_price: Some(U256::from(20_000_000_000u64)),
+        gas_price: U256::from(20_000_000_000u64),
         gas_limit: U256::from(500_000),
         input: alloy_primitives::Bytes::new(),
         nonce: 0,

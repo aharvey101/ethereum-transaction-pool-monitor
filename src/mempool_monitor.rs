@@ -9,12 +9,12 @@ use crate::{
     enhanced_revm_simulator::{EnhancedSandwichSimulator, PoolSelectionCriteria},
     sandwich_pool_integration::SandwichTarget,
 };
-use alloy_primitives::{Address, U256, Bytes};
-use alloy::consensus::Transaction as TransactionTrait;
+use alloy_primitives::{Address, U256, Bytes, hex::FromHex};
 use anyhow::Result;
 use tokio::sync::mpsc;
 use std::collections::HashSet;
 use std::time::SystemTime;
+use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn, error, debug};
 
@@ -212,14 +212,16 @@ impl MempoolMonitor {
         self.stats.total_transactions_seen += 1;
         
         // Get full transaction details
-        let tx_details = match self.eth_client.get_transaction_by_hash(&tx_hash).await? {
-            Some(tx) => tx,
-            None => return Ok(()), // Transaction not found or already mined
-        };
+        let tx_details = self.eth_client.get_transaction_by_hash(&tx_hash, &self.pool_db, 1).await?;
         
-        // Quick filter: Check if transaction interacts with known pools
-        let target_address = match tx_details.inner.to() {
-            Some(addr) => addr,
+        // Quick filter: Check if transaction interacts with known pools  
+        let target_address = match &tx_details.to {
+            Some(addr_str) => {
+                match addr_str.parse::<Address>() {
+                    Ok(addr) => addr,
+                    Err(_) => return Ok(()), // Invalid address format
+                }
+            },
             None => return Ok(()), // Contract creation
         };
         
@@ -367,32 +369,50 @@ impl MempoolMonitor {
     async fn convert_to_mempool_tx(
         &self, 
         tx_hash: String, 
-        tx_details: alloy::rpc::types::Transaction
+        tx_details: crate::eth_client::MempoolTransaction
     ) -> Result<MempoolTransaction> {
-        // Analyze if this is a DEX interaction
-        let to_addr = tx_details.inner.to().unwrap_or_default();
-        let is_dex = self.known_pools.contains(&to_addr);
+        // Parse from address
+        let from_addr = Address::from_str(&tx_details.from)?;
+        let to_addr = tx_details.to.as_ref()
+            .and_then(|s| Address::from_str(s).ok());
+        
+        // Convert hex values to proper types using the pre-computed f64 values
+        let eth_value = tx_details.value_f64;
+        let value = U256::from((eth_value * 1e18) as u64);
+        
+        let gas_price_gwei = tx_details.gas_price_f64;
+        let gas_price = U256::from((gas_price_gwei * 1e9) as u64);
+        
+        // Parse gas limit from hex string
+        let gas_limit = U256::from_str_radix(
+            tx_details.gas.trim_start_matches("0x"), 16
+        ).unwrap_or(U256::from(21000u64));
+        
+        // Parse input data
+        let input = Bytes::from_hex(&tx_details.data).unwrap_or_default();
+        
+        // Check if this is a DEX interaction
+        let is_dex = to_addr.map_or(false, |addr| self.known_pools.contains(&addr));
         
         // Estimate USD value (simplified)
-        let eth_value = tx_details.inner.value().to::<u64>() as f64 / 1e18;
         let estimated_value_usd = eth_value * 2000.0; // Assume $2000 ETH
         
-        let target_pool = if is_dex { tx_details.inner.to() } else { None };
+        let target_pool = if is_dex { to_addr } else { None };
         
         Ok(MempoolTransaction {
             hash: tx_hash,
-            from: tx_details.from,
-            to: tx_details.inner.to(),
-            value: tx_details.inner.value(),
-            gas_price: tx_details.inner.gas_price().map(U256::from).unwrap_or_default(),
-            gas_limit: U256::from(tx_details.inner.gas_limit()),
-            input: tx_details.inner.input().clone(),
-            nonce: tx_details.inner.nonce(),
+            from: from_addr,
+            to: to_addr,
+            value,
+            gas_price,
+            gas_limit,
+            input,
+            nonce: tx_details.nonce,
             timestamp: SystemTime::now(),
             is_dex_interaction: is_dex,
             estimated_value_usd,
             target_pool,
-            trade_direction: None,
+            trade_direction: None, // TODO: Analyze trade direction from input
         })
     }
     

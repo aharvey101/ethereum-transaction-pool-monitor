@@ -1,3 +1,10 @@
+//! Advanced Ethereum MEV Bot - Production-ready sandwich attack automation
+//! 
+//! This library provides direct mempool execution capabilities for MEV (Maximal Extractable Value)
+//! sandwich attacks, similar to the arboo approach, bypassing Flashbots for immediate execution.
+
+#![allow(dead_code)] // Allow unused code in production MEV bot - many components are API/future use
+
 pub mod pool_fetcher;
 pub mod pool_db;
 pub mod dex;
