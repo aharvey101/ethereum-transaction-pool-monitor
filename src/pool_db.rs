@@ -213,6 +213,40 @@ impl PoolDatabase {
         Ok(result)
     }
 
+    /// Get all pools at a specific address (for all chains)
+    pub fn get_pools_by_address(&self, address: &str) -> Result<Vec<DexPool>> {
+        let normalized = address.to_lowercase();
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT address, protocol, token0, token1, chain_id FROM pools 
+             WHERE LOWER(address) = ?1"
+        )?;
+        
+        let pool_iter = stmt.query_map([&normalized], |row| {
+            Ok(DexPool {
+                address: row.get(0)?,
+                protocol: row.get(1)?,
+                token0: row.get(2)?,
+                token1: row.get(3)?,
+                chain_id: row.get(4)?,
+            })
+        })?;
+        
+        let mut pools = Vec::new();
+        for pool in pool_iter {
+            pools.push(pool?);
+        }
+        
+        Ok(pools)
+    }
+
+    /// Get total number of pools in database
+    pub async fn get_total_pools(&self) -> Result<u32> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM pools", [], |row| row.get(0))?;
+        Ok(count as u32)
+    }
+
     /// Add a new pool to the database
     #[allow(dead_code)]
     pub fn add_pool(&self, pool: &DexPool) -> Result<()> {

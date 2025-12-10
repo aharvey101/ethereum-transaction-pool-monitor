@@ -7,10 +7,21 @@ mod pool_loader;
 mod transaction_updater;
 mod transaction_decoder;
 mod graph_client;
+mod enhanced_revm_simulator;
+mod sandwich_pool_integration;
+mod pool_state_fetcher;
+mod mempool_monitor;
+mod flash_loan_manager;
+mod mev_bundle_builder;
+mod bot_runner;
+mod transaction_executor;
 
 use app::AppState;
 use pool_loader::BackgroundPoolLoader;
 use transaction_updater::{BackgroundTransactionUpdater, TransactionUpdateMessage};
+use enhanced_revm_simulator::{EnhancedSandwichSimulator, PoolSelectionCriteria};
+use bot_runner::{MevBotRunner, BotConfig};
+use alloy_primitives::U256;
 use crossterm::{
     event::{self, DisableMouseCapture, Event, KeyCode, MouseEventKind},
     execute,
@@ -21,21 +32,162 @@ use std::io;
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 use chrono::Local;
+use clap::{Parser, Subcommand};
+use anyhow::Result;
+
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+#[command(name = "ethereum-transaction-pool-monitor")]
+#[command(about = "Advanced Ethereum Transaction Pool Monitor with MEV Sandwich Simulation")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+    
+    /// RPC URL for Ethereum node
+    #[arg(long, default_value = "http://192.168.0.14:8545")]
+    rpc_url: String,
+    
+    /// Database path for pool storage
+    #[arg(long, default_value = "./dex_pools.db")]
+    db_path: String,
+    
+    /// Enable debug mode (headless operation)
+    #[arg(long)]
+    debug: bool,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the TUI transaction monitor (default)
+    Monitor,
+    
+    /// Run enhanced REVM sandwich simulation
+    Sandwich {
+        /// Victim trade amount in ETH
+        #[arg(long, default_value = "5.0")]
+        victim_amount: f64,
+        
+        /// Minimum liquidity threshold in USD
+        #[arg(long, default_value = "100000.0")]
+        min_liquidity: f64,
+        
+        /// Maximum price impact allowed
+        #[arg(long, default_value = "0.05")]
+        max_price_impact: f64,
+        
+        /// Number of pools to analyze
+        #[arg(long, default_value = "10")]
+        pool_count: usize,
+    },
+    
+    /// Run multi-DEX comprehensive analysis
+    MultiDex {
+        /// Number of pools per protocol to test
+        #[arg(long, default_value = "20")]
+        pools_per_protocol: usize,
+    },
+    
+    /// Run basic sandwich integration test
+    Integration,
+    
+    /// Run continuous MEV bot (real-time mempool monitoring)
+    Bot {
+        /// Minimum profit threshold in ETH
+        #[arg(long, default_value = "0.01")]
+        min_profit: f64,
+        
+        /// Maximum gas price in gwei
+        #[arg(long, default_value = "50")]
+        max_gas_price: u64,
+        
+        /// Enable Flashbots bundle submission
+        #[arg(long)]
+        enable_flashbots: bool,
+
+        /// Use direct mempool submission instead of Flashbots (like arboo)
+        #[arg(long)]
+        direct_mempool: bool,
+
+        /// Use aggressive gas pricing for direct mempool (higher fees for front-running)
+        #[arg(long)]
+        aggressive_gas: bool,
+        
+        /// Signing key for transactions (development only)
+        #[arg(long)]
+        signing_key: Option<String>,
+        
+        /// Flashbots API key
+        #[arg(long)]
+        flashbots_api_key: Option<String>,
+        
+        /// Statistics reporting interval in seconds
+        #[arg(long, default_value = "30")]
+        stats_interval: u64,
+    },
+}
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    
     // Setup logging
     setup_logging();
 
-    // Check for debug mode
-    let debug_mode = std::env::var("DEBUG_MODE").is_ok();
+    // Check for debug mode (CLI flag or environment variable)
+    let debug_mode = cli.debug || std::env::var("DEBUG_MODE").is_ok();
     
-    if debug_mode {
-        tracing::info!("Running in DEBUG mode (headless)");
-        run_headless().await;
-    } else {
-        run_tui().await;
+    match cli.command {
+        Some(Commands::Monitor) | None => {
+            if debug_mode {
+                tracing::info!("Running monitor in DEBUG mode (headless)");
+                run_headless(&cli.rpc_url, &cli.db_path).await?;
+            } else {
+                run_tui(&cli.rpc_url, &cli.db_path).await?;
+            }
+        },
+        Some(Commands::Sandwich { victim_amount, min_liquidity, max_price_impact, pool_count }) => {
+            println!("🥪 Enhanced REVM Sandwich Simulation");
+            println!("====================================");
+            run_sandwich_simulation(&cli.rpc_url, &cli.db_path, victim_amount, min_liquidity, max_price_impact, pool_count).await?;
+        },
+        Some(Commands::MultiDex { pools_per_protocol }) => {
+            println!("🌐 Multi-DEX Comprehensive Analysis");
+            println!("===================================");
+            run_multi_dex_analysis(&cli.rpc_url, &cli.db_path, pools_per_protocol).await?;
+        },
+        Some(Commands::Integration) => {
+            println!("🔧 Sandwich Integration Test");
+            println!("============================");
+            run_integration_test(&cli.rpc_url, &cli.db_path).await?;
+        },
+        Some(Commands::Bot { 
+            min_profit, 
+            max_gas_price, 
+            enable_flashbots, 
+            direct_mempool,
+            aggressive_gas,
+            signing_key, 
+            flashbots_api_key, 
+            stats_interval 
+        }) => {
+            println!("🤖 Continuous MEV Bot Runner");
+            println!("============================");
+            run_mev_bot(
+                &cli.rpc_url, 
+                &cli.db_path, 
+                min_profit, 
+                max_gas_price, 
+                enable_flashbots,
+                direct_mempool,
+                aggressive_gas,
+                signing_key, 
+                flashbots_api_key, 
+                stats_interval
+            ).await?;
+        },
     }
+    
+    Ok(())
 }
 
 /// Setup logging to both file and stdout
@@ -60,33 +212,29 @@ fn setup_logging() {
 }
 
 /// Run the TUI application
-async fn run_tui() {
+async fn run_tui(rpc_url: &str, db_path: &str) -> Result<()> {
     // Setup terminal
     if let Err(e) = enable_raw_mode() {
-        eprintln!("Failed to enable raw mode: {}", e);
-        return;
+        return Err(anyhow::anyhow!("Failed to enable raw mode: {}", e));
     }
 
     let mut stdout = io::stdout();
     if let Err(e) = execute!(stdout, crossterm::terminal::EnterAlternateScreen, DisableMouseCapture) {
-        eprintln!("Failed to setup terminal: {}", e);
-        return;
+        return Err(anyhow::anyhow!("Failed to setup terminal: {}", e));
     }
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = match Terminal::new(backend) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("Failed to create terminal: {}", e);
-            return;
+            return Err(anyhow::anyhow!("Failed to create terminal: {}", e));
         }
     };
 
-    // Get RPC URL from environment or use default
-    let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://192.168.0.14:8545".to_string());
+    // Get RPC URL from parameter
+    let rpc_url = rpc_url.to_string();
     
     // Database path and chain ID (1 = Ethereum mainnet)
-    let db_path = "dex_pools.db";
     let chain_id = 1u32;
 
     // Create app state
@@ -100,10 +248,7 @@ async fn run_tui() {
                 DisableMouseCapture
             );
             let _ = terminal.show_cursor();
-            eprintln!("Failed to initialize application: {}", e);
-            eprintln!("Make sure your local Ethereum node is running.");
-            eprintln!("You can set the RPC URL with: export ETH_RPC_URL=http://your-rpc-url:port");
-            return;
+            return Err(anyhow::anyhow!("Failed to initialize application: {}", e));
         }
     };
 
@@ -135,7 +280,7 @@ async fn run_tui() {
     app.needs_redraw = true;
     
     // Run the main loop
-    let _ = run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx).await;
+    run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx).await?;
 
     // Restore terminal
     let _ = disable_raw_mode();
@@ -145,6 +290,8 @@ async fn run_tui() {
         DisableMouseCapture
     );
     let _ = terminal.show_cursor();
+    
+    Ok(())
 }
 
 async fn run_app(
@@ -362,12 +509,11 @@ async fn run_app(
 }
 
 /// Run in headless mode (no TUI, just logging)
-async fn run_headless() {
-    // Get RPC URL from environment or use default
-    let rpc_url = std::env::var("ETH_RPC_URL").unwrap_or_else(|_| "http://192.168.0.14:8545".to_string());
+async fn run_headless(rpc_url: &str, db_path: &str) -> Result<()> {
+    // Get RPC URL from parameter
+    let rpc_url = rpc_url.to_string();
     
     // Database path and chain ID
-    let db_path = "dex_pools.db";
     let chain_id = 1u32;
 
     tracing::info!("Initializing Ethereum mempool monitor");
@@ -382,7 +528,7 @@ async fn run_headless() {
         }
         Err(e) => {
             tracing::error!("Failed to initialize application: {}", e);
-            return;
+            return Err(e);
         }
     };
 
@@ -442,4 +588,249 @@ async fn run_headless() {
         // Wait 5 seconds before next update
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
+}
+
+/// Run enhanced REVM sandwich simulation
+async fn run_sandwich_simulation(
+    rpc_url: &str, 
+    db_path: &str, 
+    victim_amount: f64, 
+    min_liquidity: f64, 
+    max_price_impact: f64, 
+    pool_count: usize
+) -> Result<()> {
+    use eth_client::EthereumClient;
+    use alloy_primitives::U256;
+    
+    println!("🔧 Initializing Enhanced REVM Simulator...");
+    let eth_client = EthereumClient::new(rpc_url).await?;
+    
+    let criteria = PoolSelectionCriteria {
+        min_liquidity_usd: min_liquidity,
+        max_price_impact,
+        min_volume_24h_usd: 50_000.0,
+        supported_protocols: vec![
+            "UniswapV2".to_string(),
+            "UniswapV3".to_string(),
+            "SushiSwap".to_string(),
+            "Curve".to_string(),
+        ],
+        max_gas_price_gwei: 100.0,
+        min_profit_threshold_eth: 0.001,
+    };
+    
+    let mut simulator = EnhancedSandwichSimulator::new(
+        db_path,
+        rpc_url,
+        eth_client,
+        Some(criteria),
+    ).await?;
+    
+    println!("✅ Enhanced simulator initialized with pool database integration");
+    
+    // Find optimal sandwich targets
+    println!("\n🎯 Finding Optimal Sandwich Targets");
+    println!("Scanning 545k+ pools for high-quality opportunities...");
+    let targets = simulator.find_optimal_targets(pool_count).await?;
+    
+    if targets.is_empty() {
+        println!("❌ No suitable sandwich targets found");
+        return Ok(());
+    }
+    
+    println!("✅ Found {} optimal sandwich targets", targets.len());
+    
+    // Test different victim amounts
+    let victim_eth = U256::from((victim_amount * 1e18) as u64);
+    
+    println!("\n🥪 Enhanced Sandwich Simulation");
+    println!("Selected target:");
+    println!("   Pool: {}", targets[0].pool.address);
+    println!("   Protocol: {}", targets[0].pool.protocol);
+    println!("   Liquidity: ${:.0}", targets[0].pool.total_liquidity_usd);
+    
+    println!("\n📊 Simulating victim trade: {} ETH", victim_amount);
+    let result = simulator.simulate_sandwich_enhanced(&targets[0], victim_eth, 2.0).await?;
+    
+    println!("📋 Simulation Results:");
+    println!("   Success: {}", if result.success { "✅" } else { "❌" });
+    println!("   Gross Profit: {:.6} ETH (${:.2})", result.profit_eth, result.profit_eth * 2000.0);
+    println!("   Gas Cost: {:.6} ETH ({} gas)", result.gas_cost_eth, result.gas_used);
+    println!("   Net Profit: {:.6} ETH (${:.2})", result.net_profit_eth, result.net_profit_eth * 2000.0);
+    println!("   Price Impact: {:.2}%", result.price_impact * 100.0);
+    println!("   Risk Score: {}/100", result.risk_score);
+    println!("   Execution Time: {}ms", result.execution_time_ms);
+    
+    Ok(())
+}
+
+/// Run multi-DEX comprehensive analysis  
+async fn run_multi_dex_analysis(rpc_url: &str, db_path: &str, pools_per_protocol: usize) -> Result<()> {
+    use eth_client::EthereumClient;
+    
+    println!("🔧 Initializing Multi-DEX Analysis...");
+    let eth_client = EthereumClient::new(rpc_url).await?;
+    
+    let criteria = PoolSelectionCriteria {
+        min_liquidity_usd: 50_000.0,
+        max_price_impact: 0.10,
+        min_volume_24h_usd: 10_000.0,
+        supported_protocols: vec![
+            "UniswapV2".to_string(),
+            "UniswapV3".to_string(),
+            "SushiSwap".to_string(),
+            "Curve".to_string(),
+        ],
+        max_gas_price_gwei: 100.0,
+        min_profit_threshold_eth: 0.001,
+    };
+    
+    let mut simulator = EnhancedSandwichSimulator::new(
+        db_path,
+        rpc_url,
+        eth_client,
+        Some(criteria),
+    ).await?;
+    
+    println!("✅ Simulator initialized with 545k+ pool database");
+    
+    // Run comprehensive analysis
+    println!("\n📈 Running Multi-Pool Analysis...");
+    let analysis = simulator.analyze_multiple_pools(pools_per_protocol * 4).await?;
+    
+    println!("🎯 Multi-Pool Analysis Results:");
+    println!("   Pools Analyzed: {}", analysis.total_pools_analyzed);
+    println!("   Successful Simulations: {}", analysis.successful_simulations);
+    println!("   Success Rate: {:.1}%", analysis.success_rate * 100.0);
+    println!("   Total Potential Profit: {:.4} ETH (${:.2})", 
+        analysis.total_potential_profit_eth, analysis.total_potential_profit_usd);
+    
+    if !analysis.best_opportunities.is_empty() {
+        println!("   🏆 Best Opportunity:");
+        let best = &analysis.best_opportunities[0];
+        println!("      Pool: {} ({})", best.pool_address, best.protocol);
+        println!("      Net Profit: {:.4} ETH (${:.2})", best.net_profit_eth, best.net_profit_eth * 2000.0);
+        println!("      Risk Score: {}/100", best.risk_score);
+    }
+    
+    Ok(())
+}
+
+/// Run basic sandwich integration test
+async fn run_integration_test(rpc_url: &str, db_path: &str) -> Result<()> {
+    use sandwich_pool_integration::SandwichPoolIntegration;
+    use eth_client::EthereumClient;
+    
+    println!("🔧 Initializing Sandwich Pool Integration...");
+    let eth_client = EthereumClient::new(rpc_url).await?;
+    let integration = SandwichPoolIntegration::new(db_path, eth_client, rpc_url).await?;
+    
+    println!("✅ Integration initialized");
+    
+    // Get some sandwich targets for testing
+    println!("\n🎯 Finding sandwich targets...");
+    let candidates = integration.get_sandwich_candidates(50000.0).await?;
+    
+    if candidates.is_empty() {
+        println!("❌ No sandwich candidates found");
+        return Ok(());
+    }
+    
+    println!("✅ Found {} sandwich candidates", candidates.len());
+    
+    for (i, candidate) in candidates.iter().take(5).enumerate() {
+        println!("{}. Pool: {} | Protocol: {} | Liquidity: ${:.0} | Impact: {:.2}%", 
+            i + 1, candidate.pool_address, candidate.protocol, 
+            candidate.total_liquidity_usd, candidate.price_impact_1_eth * 100.0);
+    }
+    
+    Ok(())
+}
+
+/// Run continuous MEV bot with real-time mempool monitoring
+async fn run_mev_bot(
+    rpc_url: &str,
+    db_path: &str,
+    min_profit: f64,
+    max_gas_price_gwei: u64,
+    enable_flashbots: bool,
+    direct_mempool: bool,
+    aggressive_gas: bool,
+    signing_key: Option<String>,
+    flashbots_api_key: Option<String>,
+    stats_interval: u64,
+) -> Result<()> {
+    use eth_client::EthereumClient;
+    use pool_db::PoolDatabase;
+
+    println!("🤖 Initializing MEV Bot Runner...");
+    
+    // Initialize components
+    let eth_client = EthereumClient::new(rpc_url).await?;
+    let pool_db = PoolDatabase::new(db_path)?;
+    
+    // Load pool data
+    println!("📊 Loading pool database...");
+    let total_pools = pool_db.get_total_pools().await?;
+    println!("✅ Pool database loaded: {} pools", total_pools);
+    
+    if total_pools < 1000 {
+        println!("⚠️  Warning: Low pool count may limit opportunity detection");
+    }
+
+    // Configure bot
+    let config = BotConfig {
+        min_value_usd: 1000.0,
+        min_gas_price_gwei: 5.0,
+        max_gas_price_gwei: max_gas_price_gwei as f64,
+        confidence_threshold: 0.7,
+        enable_websocket: true,
+        max_gas_price: U256::from(max_gas_price_gwei * 1_000_000_000),
+        min_profit_threshold: min_profit,
+        max_concurrent_bundles: 5,
+        bundle_timeout_seconds: 15,
+        stats_interval_seconds: stats_interval,
+        max_opportunities_per_block: 3,
+        enable_flashbots,
+        direct_mempool,
+        aggressive_gas,
+        signing_key: signing_key.clone(),
+        flashbots_api_key: flashbots_api_key.clone(),
+    };
+
+    // Determine execution method
+    let execution_mode = if enable_flashbots && flashbots_api_key.is_some() {
+        "Flashbots Bundle"
+    } else if direct_mempool && signing_key.is_some() {
+        if aggressive_gas {
+            "Direct Mempool (Aggressive Gas)"
+        } else {
+            "Direct Mempool (Conservative Gas)"
+        }
+    } else {
+        "Simulation Only"
+    };
+
+    println!("⚙️  Bot Configuration:");
+    println!("   • Min Profit: {:.4} ETH", config.min_profit_threshold);
+    println!("   • Max Gas Price: {} gwei", max_gas_price_gwei);
+    println!("   • Execution Mode: {}", execution_mode);
+    println!("   • Stats Interval: {}s", config.stats_interval_seconds);
+
+    if execution_mode == "Simulation Only" {
+        println!("📝 Running in SIMULATION mode - no actual transactions will be sent");
+    } else {
+        println!("⚠️  LIVE MODE - Real transactions will be submitted!");
+    }
+
+    // Create and start MEV bot
+    let mut bot = MevBotRunner::new(config, eth_client, pool_db, rpc_url.to_string(), db_path.to_string()).await?;
+    
+    println!("\n🚀 Starting MEV bot runner...");
+    println!("   Press Ctrl+C to stop gracefully\n");
+    
+    // Start the bot (this will run until Ctrl+C)
+    bot.start().await?;
+    
+    Ok(())
 }

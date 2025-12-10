@@ -123,6 +123,11 @@ impl GraphClient {
         self.query_count
     }
 
+    /// Get the API key
+    pub fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
     /// Fetch all UniswapV2 pairs from The Graph with progressive database writes (resumable)
     pub async fn fetch_all_v2_pairs_with_db(&mut self, pool_db: &PoolDatabase) -> Result<u32> {
         // Correct Uniswap V2 subgraph ID

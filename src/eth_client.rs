@@ -161,6 +161,7 @@ fn format_gas_price(gas_price_hex: &str) -> String {
 }
 
 /// Ethereum client for connecting to a local node
+#[derive(Clone)]
 pub struct EthereumClient {
     rpc_url: String,
     http_client: Arc<reqwest::Client>,
@@ -537,6 +538,139 @@ impl EthereumClient {
         Ok(result.clone())
     }
 
+    /// Add missing get_gas_price method for compatibility
+    pub async fn get_gas_price(&self) -> Result<alloy_primitives::U256> {
+        let request_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_gasPrice",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+        
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let gas_price_hex = response_body["result"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid gas price response"))?;
+            
+        let gas_price = alloy_primitives::U256::from_str_radix(
+            gas_price_hex.trim_start_matches("0x"), 
+            16
+        )?;
+        
+        Ok(gas_price)
+    }
+
+    /// Add missing get_block_number method for compatibility  
+    pub async fn get_block_number(&self) -> Result<u64> {
+        self.get_latest_block_number().await
+    }
+
+    /// Get transaction receipt by hash
+    pub async fn get_transaction_receipt(&self, tx_hash: &str) -> Result<Option<serde_json::Value>> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getTransactionReceipt",
+            "params": [tx_hash],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let result = response_body.get("result");
+        
+        match result {
+            Some(receipt_data) if !receipt_data.is_null() => {
+                Ok(Some(receipt_data.clone()))
+            }
+            _ => Ok(None), // Transaction not found or null (still pending)
+        }
+    }
+
+    /// Subscribe to pending transactions via WebSocket for real-time mempool monitoring
+    pub async fn subscribe_pending_transactions(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>> {
+        // Convert HTTP URL to WebSocket URL
+        let ws_url = self.rpc_url.replace("http://", "ws://").replace("https://", "wss://");
+        
+        // Create WebSocket provider
+        use alloy::{providers::{Provider, ProviderBuilder, WsConnect}};
+        let ws = WsConnect::new(ws_url);
+        let provider = ProviderBuilder::new().on_ws(ws).await?;
+        
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        
+        // Subscribe to pending transactions
+        let subscription = provider.subscribe_pending_transactions().await?;
+        
+        // Spawn task to handle subscription
+        tokio::spawn(async move {
+            let mut stream = subscription.into_stream();
+            
+            use futures_util::StreamExt;
+            while let Some(tx_hash) = stream.next().await {
+                let hash_str = format!("0x{:x}", tx_hash);
+                if tx.send(hash_str).is_err() {
+                    break; // Receiver dropped
+                }
+            }
+        });
+        
+        Ok(rx)
+    }
+
+    /// Get full transaction details by hash using alloy types
+    pub async fn get_transaction_details(&self, tx_hash: &str) -> Result<Option<alloy::rpc::types::Transaction>> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getTransactionByHash",
+            "params": [tx_hash],
+            "id": 1
+        });
+
+        let response = self.http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let result = response_body.get("result");
+        
+        match result {
+            Some(tx_data) if !tx_data.is_null() => {
+                // Parse the transaction data into alloy Transaction type
+                let tx: alloy::rpc::types::Transaction = serde_json::from_value(tx_data.clone())?;
+                Ok(Some(tx))
+            }
+            _ => Ok(None), // Transaction not found or null
+        }
+    }
+
     /// Get the current latest block number
     pub async fn get_latest_block_number(&self) -> Result<u64> {
         let request_body = json!({
@@ -601,5 +735,27 @@ impl EthereumClient {
             // Fallback for pre-EIP-1559 blocks
             Ok(0.0)
         }
+    }
+
+    /// Calculate optimal gas price for front-running a specific transaction
+    pub async fn calculate_frontrun_gas_price(
+        &self,
+        target_tx_gas_price: alloy_primitives::U256,
+        aggressive: bool,
+    ) -> Result<alloy_primitives::U256> {
+        let target_gwei = target_tx_gas_price.to_string().parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
+        
+        let frontrun_gwei = if aggressive {
+            // Aggressive: 20% higher than victim or current gas price + 5 gwei, whichever is higher
+            let current_gas_price = self.get_gas_price().await?;
+            let current_gwei = current_gas_price.to_string().parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
+            (target_gwei * 1.2).max(current_gwei + 5.0)
+        } else {
+            // Conservative: 5% higher than victim
+            target_gwei * 1.05
+        };
+
+        let frontrun_wei = (frontrun_gwei * 1_000_000_000.0) as u64;
+        Ok(alloy_primitives::U256::from(frontrun_wei))
     }
 }

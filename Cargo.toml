@@ -9,48 +9,16 @@ name = "ethereum-transaction-pool-monitor"
 path = "src/main.rs"
 
 [[bin]]
-name = "test_pool_fetch"
-path = "src/bin/test_pool_fetch.rs"
-
-[[bin]]
 name = "enhanced_pool_scanner"
 path = "src/bin/enhanced_pool_scanner.rs"
-
-[[bin]]
-name = "test_parallel_scan"
-path = "src/bin/test_parallel_scan.rs"
 
 [[bin]]
 name = "import_arboo_cache"
 path = "src/bin/import_arboo_cache.rs"
 
 [[bin]]
-name = "test_multi_dex"
-path = "src/bin/test_multi_dex.rs"
-
-[[bin]]
-name = "run_comprehensive_scan"
-path = "run_comprehensive_scan.rs"
-
-[[bin]]
 name = "graph_pool_fetcher"
 path = "src/bin/graph_pool_fetcher.rs"
-
-[[bin]]
-name = "test_dex_detection"
-path = "src/bin/test_dex_detection.rs"
-
-[[bin]]
-name = "test_sandwich_integration"
-path = "src/bin/test_sandwich_integration.rs"
-
-[[bin]]
-name = "test_enhanced_revm"
-path = "src/bin/test_enhanced_revm.rs"
-
-[[bin]]
-name = "test_multi_dex_comprehensive"
-path = "src/bin/test_multi_dex_comprehensive.rs"
 
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }
@@ -67,7 +35,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "1"
 futures = "0.3"
-chrono = "0.4"
+futures-util = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.11", features = ["json"] }
 lazy_static = "1.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
@@ -75,3 +44,4 @@ csv = "1.3"
 indicatif = "0.17"
 env_logger = "0.10"
 rand = "0.8"
+clap = { version = "4.0", features = ["derive"] }
