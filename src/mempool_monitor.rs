@@ -131,10 +131,18 @@ impl MempoolMonitor {
         db_path: &str,
         config: MempoolConfig,
     ) -> Result<(Self, mpsc::UnboundedReceiver<MempoolOpportunity>)> {
+        info!("🚀 Initializing MEV mempool monitor...");
+        debug!("🔗 Connecting to RPC: {}", rpc_url);
+        debug!("🗄️  Database path: {}", db_path);
+        
         let eth_client = EthereumClient::new(rpc_url).await?;
+        info!("✅ Ethereum client connected");
+        
         let pool_db = PoolDatabase::new(db_path)?;
+        info!("✅ Pool database loaded");
         
         // Initialize enhanced simulator
+        debug!("🧠 Initializing sandwich simulator...");
         let criteria = PoolSelectionCriteria {
             min_liquidity_usd: 50_000.0,
             max_price_impact: config.max_price_impact,
@@ -150,10 +158,12 @@ impl MempoolMonitor {
             eth_client.clone(),
             Some(criteria),
         ).await?;
+        info!("✅ Enhanced sandwich simulator ready");
         
         // Pre-load known pool addresses for fast filtering
+        debug!("📚 Loading known pool addresses for mempool filtering...");
         let known_pools = Self::load_known_pools(&pool_db).await?;
-        info!("Loaded {} known pool addresses for mempool filtering", known_pools.len());
+        info!("✅ Loaded {} known pool addresses for mempool filtering", known_pools.len());
         
         let (opportunity_sender, opportunity_receiver) = mpsc::unbounded_channel();
         
@@ -178,32 +188,56 @@ impl MempoolMonitor {
             self.config.max_gas_price_gwei, 
             self.config.min_profit_threshold_eth
         );
+        info!("🎯 Monitoring {} protocols: {:?}", 
+            self.config.target_protocols.len(),
+            self.config.target_protocols
+        );
         
-        // Subscribe to mempool transactions via WebSocket
-        let mut tx_stream = self.eth_client.subscribe_pending_transactions().await?;
-        
+        // Subscribe to mempool transactions via WebSocket with auto-reconnection
         loop {
-            tokio::select! {
-                // Handle new mempool transactions
-                tx_result = tx_stream.recv() => {
-                    match tx_result {
-                        Some(tx_hash) => {
-                            if let Err(e) = self.process_mempool_transaction(tx_hash).await {
-                                debug!("Failed to process transaction: {}", e);
+            debug!("📡 Attempting to subscribe to pending transactions stream...");
+            
+            match self.eth_client.subscribe_pending_transactions().await {
+                Ok(mut tx_stream) => {
+                    info!("✅ Successfully subscribed to mempool transactions");
+                    
+                    // Process transactions until connection drops
+                    loop {
+                        tokio::select! {
+                            // Handle new mempool transactions
+                            tx_result = tx_stream.recv() => {
+                                match tx_result {
+                                    Some(tx_hash) => {
+                                        debug!("📨 Processing new pending transaction: {}", tx_hash);
+                                        let tx_hash_for_debug = tx_hash.clone();
+                                        
+                                        if let Err(e) = self.process_mempool_transaction(tx_hash).await {
+                                            debug!("⚠️  Failed to process transaction {}: {}", tx_hash_for_debug, e);
+                                        }
+                                    }
+                                    None => {
+                                        warn!("📡 WebSocket subscription disconnected, attempting to reconnect...");
+                                        break; // Exit inner loop to reconnect
+                                    }
+                                }
                             }
-                        }
-                        None => {
-                            warn!("Mempool subscription ended");
-                            return Ok(());
+                            
+                            // Print stats every 30 seconds
+                            _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                                self.print_monitoring_stats();
+                            }
                         }
                     }
                 }
-                
-                // Print stats every 30 seconds
-                _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
-                    self.print_monitoring_stats();
+                Err(e) => {
+                    error!("❌ Failed to subscribe to mempool: {}. Retrying in 5 seconds...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 }
             }
+            
+            // Wait before attempting to reconnect
+            warn!("🔄 Reconnecting to mempool in 3 seconds...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
     }
     
@@ -212,6 +246,7 @@ impl MempoolMonitor {
         self.stats.total_transactions_seen += 1;
         
         // Get full transaction details
+        debug!("🔍 Fetching transaction details for: {}", tx_hash);
         let tx_details = self.eth_client.get_transaction_by_hash(&tx_hash, &self.pool_db, 1).await?;
         
         // Quick filter: Check if transaction interacts with known pools  
@@ -219,20 +254,31 @@ impl MempoolMonitor {
             Some(addr_str) => {
                 match addr_str.parse::<Address>() {
                     Ok(addr) => addr,
-                    Err(_) => return Ok(()), // Invalid address format
+                    Err(_) => {
+                        debug!("🔍 Skipping tx {} - invalid address format", tx_hash);
+                        return Ok(());
+                    }
                 }
             },
-            None => return Ok(()), // Contract creation
+            None => {
+                debug!("🔍 Skipping tx {} - contract creation", tx_hash);
+                return Ok(());
+            }
         };
         
         if !self.known_pools.contains(&target_address) {
+            debug!("🔍 Skipping tx {} - not a DEX interaction (target: {})", tx_hash, target_address);
             return Ok(()); // Not a DEX interaction
         }
         
+        debug!("🎯 Found DEX interaction: {} -> {}", tx_hash, target_address);
+        
         // Convert to our mempool transaction format
+        debug!("🔄 Converting transaction to mempool format...");
         let mempool_tx = self.convert_to_mempool_tx(tx_hash, tx_details).await?;
         
         if !mempool_tx.is_dex_interaction {
+            debug!("🔍 Transaction is not a DEX interaction after analysis");
             return Ok(());
         }
         
@@ -241,18 +287,28 @@ impl MempoolMonitor {
         
         // Check if transaction meets our value threshold
         if mempool_tx.estimated_value_usd < self.config.min_tx_value_usd {
+            debug!("💸 Transaction value too low: ${:.0} < ${:.0}", 
+                mempool_tx.estimated_value_usd, self.config.min_tx_value_usd);
             return Ok(());
         }
         
         // Check gas price threshold
         let gas_price_gwei = mempool_tx.gas_price.to::<u64>() as f64 / 1e9;
         if gas_price_gwei > self.config.max_gas_price_gwei {
+            debug!("⛽ Gas price too high: {:.1} gwei > {:.1} gwei", 
+                gas_price_gwei, self.config.max_gas_price_gwei);
             return Ok(());
         }
         
+        info!("✨ Potential MEV target: {} (${:.0}, {:.1} gwei)", 
+            mempool_tx.hash, mempool_tx.estimated_value_usd, gas_price_gwei);
+        
         // Analyze for sandwich opportunity
+        debug!("🧠 Analyzing sandwich opportunity for transaction...");
         if let Some(opportunity) = self.analyze_sandwich_opportunity(mempool_tx).await? {
             self.stats.opportunities_detected += 1;
+            debug!("🎯 Opportunity found! Estimated profit: {:.4} ETH, confidence: {:.1}%", 
+                opportunity.estimated_profit_eth, opportunity.confidence_score * 100.0);
             
             if opportunity.estimated_profit_eth >= self.config.min_profit_threshold_eth 
                 && opportunity.confidence_score >= self.config.confidence_threshold {
@@ -264,10 +320,19 @@ impl MempoolMonitor {
                 );
                 
                 // Send opportunity to execution engine
+                debug!("📤 Sending opportunity to execution engine...");
                 if let Err(e) = self.opportunity_sender.send(opportunity) {
-                    error!("Failed to send opportunity to executor: {}", e);
+                    error!("❌ Failed to send opportunity to executor: {}", e);
+                } else {
+                    debug!("✅ Opportunity sent successfully");
                 }
+            } else {
+                debug!("📊 Opportunity below thresholds - profit: {:.4} ETH (min: {:.4}), confidence: {:.1}% (min: {:.1}%)",
+                    opportunity.estimated_profit_eth, self.config.min_profit_threshold_eth,
+                    opportunity.confidence_score * 100.0, self.config.confidence_threshold * 100.0);
             }
+        } else {
+            debug!("🔍 No sandwich opportunity found for this transaction");
         }
         
         Ok(())
@@ -391,13 +456,31 @@ impl MempoolMonitor {
         // Parse input data
         let input = Bytes::from_hex(&tx_details.data).unwrap_or_default();
         
-        // Check if this is a DEX interaction
-        let is_dex = to_addr.map_or(false, |addr| self.known_pools.contains(&addr));
+        // Check if this is a DEX interaction (either direct pool or router)
+        let is_dex = to_addr.map_or(false, |addr| {
+            let addr_string = format!("{:#x}", addr); // Use hex format like 0x1234...
+            let is_pool = self.known_pools.contains(&addr);
+            let is_router = self.pool_db.is_dex_router(&addr_string);
+            debug!("🔍 Checking address: {} - Pool: {}, Router: {}", addr_string, is_pool, is_router);
+            is_pool || is_router
+        });
         
         // Estimate USD value (simplified)
         let estimated_value_usd = eth_value * 2000.0; // Assume $2000 ETH
         
-        let target_pool = if is_dex { to_addr } else { None };
+        let target_pool = if is_dex {
+            // For direct pool interactions, use the to_addr
+            if self.known_pools.contains(&to_addr.unwrap_or_default()) {
+                to_addr
+            } else {
+                // For router transactions, we'd need to parse the input data
+                // to determine the target pool. For now, return None and 
+                // let the sandwich analyzer handle pool detection.
+                None
+            }
+        } else { 
+            None 
+        };
         
         Ok(MempoolTransaction {
             hash: tx_hash,
