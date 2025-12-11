@@ -1,0 +1,148 @@
+🔄 MEV Bot Transaction Processing Flow
+=====================================
+
+📡 WebSocket Stream (192.168.0.14:8547)
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  📨 Pending Transaction Received    │
+│  Example: 0x908f6d71f37b277e...      │
+│  Target: 0x7a250d5630b4cf539... (UV2)│
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  🔍 Quick DEX Filter Check          │
+│  mempool_monitor.rs:269             │
+│                                     │
+│  if (!known_pools.contains(addr) && │
+│      !pool_db.is_dex_router(addr))  │
+│    ❌ SKIP: "not a DEX interaction" │
+│  else                               │
+│    ✅ PASS: "Found DEX interaction" │
+└─────────────────────────────────────┘
+   │ ✅ DEX Transaction
+   ▼
+┌─────────────────────────────────────┐
+│  📡 Fetch Full Transaction Details  │
+│  eth_client.get_transaction_by_hash │
+│                                     │
+│  • from: 0x123...                   │
+│  • to: 0x7a250d5630... (Uniswap V2) │
+│  • value: 0 ETH (token swap!)       │
+│  • gas_price: 20 gwei               │
+│  • input: 0x38ed1739... (swap data) │
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  🔄 Convert to MempoolTransaction   │
+│  mempool_monitor.rs:460+            │
+│                                     │
+│  🔍 Enhanced DEX Detection:         │
+│  addr_string = format!("{:#x}", addr)│
+│  is_pool = known_pools.contains()   │
+│  is_router = pool_db.is_dex_router()│
+│  ✅ Router: true                    │
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  💸 Value Threshold Check           │
+│  mempool_monitor.rs:291+            │
+│                                     │
+│  estimated_value_usd = eth_value * $2000│
+│  = 0 ETH * $2000 = $0 USD           │
+│                                     │
+│  ❌ OLD: if ($0 < $1000) SKIP       │
+│  ✅ NEW: if (is_router) PROCEED     │
+│  🔄 "Proceeding despite low ETH value"│
+└─────────────────────────────────────┘
+   │ ✅ Value Check Bypassed
+   ▼
+┌─────────────────────────────────────┐
+│  ⛽ Gas Price Check                 │
+│  gas_price_gwei = 20.0              │
+│  if (20.0 > 50.0) SKIP              │
+│  ✅ PASS: Gas price acceptable      │
+└─────────────────────────────────────┘
+   │ ✅ Gas Check Passed
+   ▼
+┌─────────────────────────────────────┐
+│  ✨ Potential MEV Target Identified │
+│  "✨ Potential MEV target: 0x908... │
+│   ($0, 0.0 gwei)"                   │
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  🧠 Analyze Sandwich Opportunity    │
+│  mempool_monitor.rs:342+            │
+│                                     │
+│  analyze_sandwich_opportunity()     │
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  🎯 Create Sandwich Target          │
+│  mempool_monitor.rs:485+            │
+│                                     │
+│  • Extract pool from tx input data  │
+│  • Get pool info from database      │
+│  • Create PoolState object          │
+│                                     │
+│  ❌ ISSUE: target_pool = None       │
+│      (Router txs need input parsing)│
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  🥪 Enhanced REVM Simulation        │
+│  enhanced_revm_simulator.rs:160+    │
+│                                     │
+│  simulate_sandwich_enhanced()       │
+│  • Step 1: Frontrun (buy tokens)    │
+│  • Step 2: Victim tx executes       │ 
+│  • Step 3: Backrun (sell tokens)    │
+│  • Calculate profit/loss            │
+│                                     │
+│  ❌ RESULT: No opportunity found    │
+│      (target_pool = None fails)     │
+└─────────────────────────────────────┘
+   │
+   ▼
+┌─────────────────────────────────────┐
+│  🔍 Simulation Result               │
+│  "🔍 No sandwich opportunity found  │
+│   for this transaction"             │
+│                                     │
+│  ❌ analyze_sandwich_opportunity()  │
+│      returns Ok(None)               │
+└─────────────────────────────────────┘
+
+🔍 BOTTLENECK IDENTIFIED:
+=========================
+
+The issue is in target_pool extraction for router transactions:
+
+Router Transaction Input Data:
+┌─────────────────────────────────────┐
+│ 0x38ed1739000000000000000000000000... │ 
+│                                     │
+│ Method: swapExactTokensForTokens    │
+│ Params: [amountIn, amountOut,       │
+│          path[], to, deadline]      │
+│                                     │
+│ Hidden Info:                        │
+│ • Token A: USDC                     │
+│ • Token B: WETH                     │ 
+│ • Pool: 0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640 │
+│ • Swap Value: $50,000               │
+└─────────────────────────────────────┘
+
+SOLUTION NEEDED:
+• Parse router transaction input data
+• Extract token addresses from path[]
+• Calculate USD value from token amounts  
+• Find the actual pool address for simulation
+

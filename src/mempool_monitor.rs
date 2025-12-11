@@ -251,8 +251,18 @@ impl MempoolMonitor {
         };
         
         if !self.known_pools.contains(&target_address) {
-            debug!("🔍 Skipping tx {} - not a DEX interaction (target: {})", tx_hash, target_address);
-            return Ok(()); // Not a DEX interaction
+            // Check if this is a router transaction before skipping
+            let target_string = format!("{:#x}", target_address);
+            let is_router = self.pool_db.is_dex_router(&target_string);
+            
+            if is_router {
+                info!("🎯 Router transaction detected: {} -> {}", tx_hash, target_address);
+            } else {
+                debug!("🔍 Skipping tx {} - not a DEX interaction (target: {})", tx_hash, target_address);
+                return Ok(()); // Not a DEX interaction
+            }
+        } else {
+            info!("🎯 Direct pool interaction: {} -> {}", tx_hash, target_address);
         }
         
         debug!("🎯 Found DEX interaction: {} -> {}", tx_hash, target_address);
@@ -432,9 +442,10 @@ impl MempoolMonitor {
     async fn load_known_pools(pool_db: &PoolDatabase) -> Result<HashSet<Address>> {
         let mut pools = HashSet::new();
         
-        // Load from each protocol
+        // Load from each protocol for Ethereum mainnet (chain_id = 1)
         for protocol in &["UniswapV2", "UniswapV3", "SushiSwap", "Curve"] {
-            let protocol_pools = pool_db.get_pools_by_protocol(protocol, 50000)?; // Load up to 50k pools per protocol
+            let protocol_pools = pool_db.get_pools_by_protocol(protocol, 1)?; // Ethereum mainnet
+            info!("📊 Loading {} pools for protocol: {}", protocol_pools.len(), protocol);
             for pool in protocol_pools {
                 if let Ok(addr) = pool.address.parse::<Address>() {
                     pools.insert(addr);
@@ -442,6 +453,7 @@ impl MempoolMonitor {
             }
         }
         
+        info!("📊 Total known pool addresses loaded: {}", pools.len());
         Ok(pools)
     }
     

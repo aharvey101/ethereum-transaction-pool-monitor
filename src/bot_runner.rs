@@ -1,12 +1,11 @@
 /// Continuous MEV Bot Runner
-/// 
+///
 /// This module provides the main execution loop for the MEV bot, coordinating
 /// mempool monitoring, opportunity detection, bundle building, and submission.
-
 use crate::{
+    eth_client::EthereumClient,
     mempool_monitor::{MempoolMonitor, MempoolOpportunity},
     mev_bundle_builder::MevBundleBuilder,
-    eth_client::EthereumClient,
     pool_db::PoolDatabase,
 };
 use alloy_primitives::U256;
@@ -14,13 +13,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::{SystemTime, Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::{
+    select,
     sync::{mpsc, RwLock},
     time::interval,
-    select,
 };
-use tracing::{info, warn, error, debug};
+use tracing::{debug, error, info, warn};
 
 /// Configuration for the MEV bot
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,14 +30,14 @@ pub struct BotConfig {
     pub confidence_threshold: f64,
     pub enable_websocket: bool,
     pub max_gas_price: U256,
-    pub min_profit_threshold: f64,  // ETH
+    pub min_profit_threshold: f64, // ETH
     pub max_concurrent_bundles: usize,
     pub bundle_timeout_seconds: u64,
     pub stats_interval_seconds: u64,
     pub max_opportunities_per_block: usize,
     pub enable_flashbots: bool,
-    pub direct_mempool: bool,        // Use direct mempool submission (like arboo)
-    pub aggressive_gas: bool,        // Use aggressive gas pricing for MEV
+    pub direct_mempool: bool, // Use direct mempool submission (like arboo)
+    pub aggressive_gas: bool, // Use aggressive gas pricing for MEV
     pub signing_key: Option<String>,
     pub flashbots_api_key: Option<String>,
 }
@@ -52,7 +51,7 @@ impl Default for BotConfig {
             confidence_threshold: 0.7,
             enable_websocket: true,
             max_gas_price: U256::from(50_000_000_000_u64), // 50 gwei
-            min_profit_threshold: 0.01, // 0.01 ETH minimum profit
+            min_profit_threshold: 0.01,                    // 0.01 ETH minimum profit
             max_concurrent_bundles: 5,
             bundle_timeout_seconds: 10,
             stats_interval_seconds: 30,
@@ -106,21 +105,25 @@ impl Default for BotStats {
 impl BotStats {
     /// Calculate bot performance metrics
     pub fn calculate_metrics(&self) -> BotMetrics {
-        let uptime_hours = self.start_time.elapsed()
-            .unwrap_or_default()
-            .as_secs_f64() / 3600.0;
+        let uptime_hours = self.start_time.elapsed().unwrap_or_default().as_secs_f64() / 3600.0;
 
         BotMetrics {
             uptime_hours,
             success_rate: if self.bundles_submitted > 0 {
                 self.bundles_included as f64 / self.bundles_submitted as f64
-            } else { 0.0 },
+            } else {
+                0.0
+            },
             profit_per_hour: if uptime_hours > 0.0 {
                 self.total_profit_eth / uptime_hours
-            } else { 0.0 },
+            } else {
+                0.0
+            },
             opportunities_per_hour: if uptime_hours > 0.0 {
                 self.opportunities_detected as f64 / uptime_hours
-            } else { 0.0 },
+            } else {
+                0.0
+            },
             net_profit_eth: self.total_profit_eth - self.total_gas_fees_eth,
         }
     }
@@ -132,7 +135,7 @@ pub struct BotMetrics {
     pub uptime_hours: f64,
     pub success_rate: f64,           // Bundles included / bundles submitted
     pub profit_per_hour: f64,        // ETH per hour
-    pub opportunities_per_hour: f64,  // Opportunities detected per hour
+    pub opportunities_per_hour: f64, // Opportunities detected per hour
     pub net_profit_eth: f64,         // Total profit minus gas costs
 }
 
@@ -212,11 +215,8 @@ impl MevBotRunner {
         };
 
         // Start mempool monitoring
-        let (mempool_monitor, opportunity_rx) = MempoolMonitor::new(
-            &self.rpc_url,
-            &self.db_path,
-            mempool_config,
-        ).await?;
+        let (mempool_monitor, opportunity_rx) =
+            MempoolMonitor::new(&self.rpc_url, &self.db_path, mempool_config).await?;
 
         let mempool_task = {
             let mut monitor = mempool_monitor;
@@ -245,7 +245,15 @@ impl MevBotRunner {
             let active_bundles = self.active_bundles.clone();
             let opportunity_queue = self.opportunity_queue.clone();
             tokio::spawn(async move {
-                Self::execute_bundles_loop(config, rpc_url, eth_client, stats, active_bundles, opportunity_queue).await;
+                Self::execute_bundles_loop(
+                    config,
+                    rpc_url,
+                    eth_client,
+                    stats,
+                    active_bundles,
+                    opportunity_queue,
+                )
+                .await;
             })
         };
 
@@ -300,23 +308,26 @@ impl MevBotRunner {
         opportunity_queue: Arc<RwLock<VecDeque<MempoolOpportunity>>>,
     ) {
         while let Some(opportunity) = opportunity_rx.recv().await {
-            debug!("Processing new opportunity: {}", opportunity.victim_tx.hash);
+            info!("Processing new opportunity: {}", opportunity.victim_tx.hash);
 
             // Update stats
             {
                 let mut stats_lock = stats.write().await;
                 stats_lock.opportunities_detected += 1;
-                
-            // Update average confidence
-            let total_conf = stats_lock.avg_opportunity_confidence * (stats_lock.opportunities_detected - 1) as f64;
-            stats_lock.avg_opportunity_confidence = (total_conf + opportunity.confidence_score as f64) / stats_lock.opportunities_detected as f64;
+
+                // Update average confidence
+                let total_conf = stats_lock.avg_opportunity_confidence
+                    * (stats_lock.opportunities_detected - 1) as f64;
+                stats_lock.avg_opportunity_confidence = (total_conf
+                    + opportunity.confidence_score as f64)
+                    / stats_lock.opportunities_detected as f64;
             }
 
             // Add to queue for bundle execution
             {
                 let mut queue = opportunity_queue.write().await;
                 queue.push_back(opportunity);
-                
+
                 // Limit queue size to prevent memory issues
                 if queue.len() > 1000 {
                     queue.pop_front();
@@ -331,11 +342,26 @@ impl MevBotRunner {
         info!("╔══════════════════════════════════════════════════════════════╗");
         info!("║                  MEV BOT RUNNER STARTED                     ║");
         info!("╠══════════════════════════════════════════════════════════════╣");
-        info!("║ Min Profit Threshold: {:.4} ETH                           ║", self.config.min_profit_threshold);
-        info!("║ Max Gas Price: {} gwei                                  ║", self.config.max_gas_price / U256::from(1_000_000_000));
-        info!("║ Max Concurrent Bundles: {}                                ║", self.config.max_concurrent_bundles);
-        info!("║ Flashbots Enabled: {}                                    ║", self.config.enable_flashbots);
-        info!("║ Pool Database: {} pools loaded                         ║", self.pool_db.get_total_pools().await.unwrap_or(0));
+        info!(
+            "║ Min Profit Threshold: {:.4} ETH                           ║",
+            self.config.min_profit_threshold
+        );
+        info!(
+            "║ Max Gas Price: {} gwei                                  ║",
+            self.config.max_gas_price / U256::from(1_000_000_000)
+        );
+        info!(
+            "║ Max Concurrent Bundles: {}                                ║",
+            self.config.max_concurrent_bundles
+        );
+        info!(
+            "║ Flashbots Enabled: {}                                    ║",
+            self.config.enable_flashbots
+        );
+        info!(
+            "║ Pool Database: {} pools loaded                         ║",
+            self.pool_db.get_total_pools().await.unwrap_or(0)
+        );
         info!("╚══════════════════════════════════════════════════════════════╝");
     }
 
@@ -347,27 +373,48 @@ impl MevBotRunner {
         info!("╔══════════════════════════════════════════════════════════════╗");
         info!("║                     FINAL MEV BOT STATS                     ║");
         info!("╠══════════════════════════════════════════════════════════════╣");
-        info!("║ Uptime: {:.2} hours                                       ║", metrics.uptime_hours);
-        info!("║ Opportunities Detected: {}                                ║", stats.opportunities_detected);
-        info!("║ Bundles Submitted: {}                                      ║", stats.bundles_submitted);
-        info!("║ Bundles Included: {}                                       ║", stats.bundles_included);
-        info!("║ Success Rate: {:.1}%                                       ║", metrics.success_rate * 100.0);
-        info!("║ Total Profit: {:.4} ETH                                   ║", stats.total_profit_eth);
-        info!("║ Net Profit: {:.4} ETH                                     ║", metrics.net_profit_eth);
-        info!("║ Profit/Hour: {:.4} ETH                                    ║", metrics.profit_per_hour);
+        info!(
+            "║ Uptime: {:.2} hours                                       ║",
+            metrics.uptime_hours
+        );
+        info!(
+            "║ Opportunities Detected: {}                                ║",
+            stats.opportunities_detected
+        );
+        info!(
+            "║ Bundles Submitted: {}                                      ║",
+            stats.bundles_submitted
+        );
+        info!(
+            "║ Bundles Included: {}                                       ║",
+            stats.bundles_included
+        );
+        info!(
+            "║ Success Rate: {:.1}%                                       ║",
+            metrics.success_rate * 100.0
+        );
+        info!(
+            "║ Total Profit: {:.4} ETH                                   ║",
+            stats.total_profit_eth
+        );
+        info!(
+            "║ Net Profit: {:.4} ETH                                     ║",
+            metrics.net_profit_eth
+        );
+        info!(
+            "║ Profit/Hour: {:.4} ETH                                    ║",
+            metrics.profit_per_hour
+        );
         info!("╚══════════════════════════════════════════════════════════════╝");
     }
 
     /// Statistics reporting loop
-    async fn report_statistics_loop(
-        stats: Arc<RwLock<BotStats>>,
-        interval_seconds: u64,
-    ) {
+    async fn report_statistics_loop(stats: Arc<RwLock<BotStats>>, interval_seconds: u64) {
         let mut interval = interval(Duration::from_secs(interval_seconds));
-        
+
         loop {
             interval.tick().await;
-            
+
             let stats_snapshot = stats.read().await.clone();
             let metrics = stats_snapshot.calculate_metrics();
 
@@ -389,18 +436,19 @@ impl MevBotRunner {
         timeout: Duration,
     ) {
         let mut interval = interval(Duration::from_secs(10));
-        
+
         loop {
             interval.tick().await;
-            
+
             let mut bundles = active_bundles.write().await;
             let now = Instant::now();
-            
-            let expired: Vec<String> = bundles.iter()
+
+            let expired: Vec<String> = bundles
+                .iter()
                 .filter(|(_, bundle)| now.duration_since(bundle.submission_time) > timeout)
                 .map(|(hash, _)| hash.clone())
                 .collect();
-                
+
             for hash in expired {
                 bundles.remove(&hash);
                 debug!("Removed expired bundle: {}", hash);
@@ -427,8 +475,8 @@ impl MevBotRunner {
     ) {
         let execution_method = if config.enable_flashbots {
             if let Some(api_key) = &config.flashbots_api_key {
-                crate::mev_bundle_builder::ExecutionMethod::Flashbots { 
-                    api_key: api_key.clone() 
+                crate::mev_bundle_builder::ExecutionMethod::Flashbots {
+                    api_key: api_key.clone(),
                 }
             } else {
                 warn!("Flashbots enabled but no API key provided, using simulation mode");
@@ -436,7 +484,7 @@ impl MevBotRunner {
             }
         } else if config.direct_mempool {
             if let Some(private_key) = &config.signing_key {
-                crate::mev_bundle_builder::ExecutionMethod::DirectMempool { 
+                crate::mev_bundle_builder::ExecutionMethod::DirectMempool {
                     private_key: private_key.clone(),
                     aggressive_gas: config.aggressive_gas,
                 }
@@ -451,14 +499,19 @@ impl MevBotRunner {
         let mut bundle_builder = MevBundleBuilder::new();
 
         // Configure the bundle builder
-        bundle_builder.max_gas_price = config.max_gas_price.to_string().parse::<u128>().unwrap_or(200_000_000_000);
-        bundle_builder.min_profit_threshold = U256::from((config.min_profit_threshold * 1e18) as u64);
+        bundle_builder.max_gas_price = config
+            .max_gas_price
+            .to_string()
+            .parse::<u128>()
+            .unwrap_or(200_000_000_000);
+        bundle_builder.min_profit_threshold =
+            U256::from((config.min_profit_threshold * 1e18) as u64);
 
         let mut interval = interval(Duration::from_millis(100)); // Check every 100ms
-        
+
         loop {
             interval.tick().await;
-            
+
             // Get current block number
             let current_block = match eth_client.get_block_number().await {
                 Ok(block) => block,
@@ -476,7 +529,7 @@ impl MevBotRunner {
 
             // Process opportunities for next block
             let target_block = current_block + 1;
-            
+
             // Check if we have capacity for more bundles
             let active_count = active_bundles.read().await.len();
             if active_count >= config.max_concurrent_bundles {
@@ -492,17 +545,32 @@ impl MevBotRunner {
             if let Some(opportunity) = opportunity {
                 // Only process high-confidence opportunities
                 if opportunity.confidence_score < config.confidence_threshold as f32 {
-                    debug!("Skipping low-confidence opportunity: {:.2}", opportunity.confidence_score);
+                    debug!(
+                        "Skipping low-confidence opportunity: {:.2}",
+                        opportunity.confidence_score
+                    );
                     continue;
                 }
 
                 // Check profit threshold
                 if opportunity.estimated_profit_eth < config.min_profit_threshold {
-                    debug!("Skipping low-profit opportunity: {:.4} ETH", opportunity.estimated_profit_eth);
+                    debug!(
+                        "Skipping low-profit opportunity: {:.4} ETH",
+                        opportunity.estimated_profit_eth
+                    );
                     continue;
                 }
 
-                if let Err(e) = Self::execute_opportunity(&bundle_builder, opportunity, execution_method.clone(), target_block, &stats, &active_bundles).await {
+                if let Err(e) = Self::execute_opportunity(
+                    &bundle_builder,
+                    opportunity,
+                    execution_method.clone(),
+                    target_block,
+                    &stats,
+                    &active_bundles,
+                )
+                .await
+                {
                     error!("Failed to execute opportunity: {}", e);
                 }
             }
@@ -519,13 +587,22 @@ impl MevBotRunner {
         active_bundles: &Arc<RwLock<HashMap<String, ActiveBundle>>>,
     ) -> Result<()> {
         let start_time = Instant::now();
-        debug!("Executing opportunity for block {}: {}", target_block, opportunity.victim_tx.hash);
+        debug!(
+            "Executing opportunity for block {}: {}",
+            target_block, opportunity.victim_tx.hash
+        );
 
         // Execute sandwich attack using the specified method
-        let submission_result = match bundle_builder.execute_sandwich_attack(&opportunity, execution_method.clone()).await {
+        let submission_result = match bundle_builder
+            .execute_sandwich_attack(&opportunity, execution_method.clone())
+            .await
+        {
             Ok(result) => result,
             Err(e) => {
-                warn!("Failed to execute sandwich for {}: {}", opportunity.victim_tx.hash, e);
+                warn!(
+                    "Failed to execute sandwich for {}: {}",
+                    opportunity.victim_tx.hash, e
+                );
                 return Err(e);
             }
         };
@@ -539,13 +616,14 @@ impl MevBotRunner {
         // Update stats based on result
         {
             let mut stats_lock = stats.write().await;
-            
+
             if submission_result.submitted {
                 stats_lock.bundles_submitted += 1;
                 stats_lock.total_profit_eth += submission_result.profit_eth;
                 stats_lock.total_gas_fees_eth += submission_result.total_gas_used as f64 * 20e-9; // Estimate gas cost
-                
-                info!("Bundle submitted for block {} | Hash: {:?} | Profit: {:.4} ETH | Gas: {}",
+
+                info!(
+                    "Bundle submitted for block {} | Hash: {:?} | Profit: {:.4} ETH | Gas: {}",
                     target_block,
                     submission_result.bundle_hash,
                     submission_result.profit_eth,
@@ -566,10 +644,16 @@ impl MevBotRunner {
                 bundle_hash: Some(bundle_hash.clone()),
             };
 
-            active_bundles.write().await.insert(bundle_hash, active_bundle);
+            active_bundles
+                .write()
+                .await
+                .insert(bundle_hash, active_bundle);
         }
 
-        debug!("Opportunity execution completed in {:?}", start_time.elapsed());
+        debug!(
+            "Opportunity execution completed in {:?}",
+            start_time.elapsed()
+        );
         Ok(())
     }
 }
@@ -605,3 +689,4 @@ mod tests {
         assert!(metrics.opportunities_per_hour >= 90.0); // ~100/hour
     }
 }
+
