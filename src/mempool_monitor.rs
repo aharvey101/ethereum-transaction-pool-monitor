@@ -5,12 +5,12 @@
 use crate::{
     eth_client::EthereumClient, pool_db::PoolDatabase, sandwich_pool_integration::SandwichTarget,
 };
-use alloy_primitives::{hex::FromHex, Address, Bytes, U256};
+use alloy_primitives::{hex::FromHex, Address, Bytes, U256, keccak256};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Arc;
+
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -385,12 +385,34 @@ impl MempoolMonitor {
         &mut self,
         victim_tx: MempoolTransaction,
     ) -> Result<Option<MempoolOpportunity>> {
+        let opportunity_id = format!("opp_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        
+        info!("🔍 === SANDWICH OPPORTUNITY ANALYSIS STARTED ===");
+        info!("📊 Analysis ID: {}", opportunity_id);
+        info!("🎯 VICTIM TRANSACTION DETAILS:");
+        info!("   - TX Hash: {}", victim_tx.hash);
+        info!("   - From: {}", victim_tx.from);
+        info!("   - To: {:?}", victim_tx.to);
+        info!("   - Value: {} wei ({} ETH)", victim_tx.value, victim_tx.value.to::<u128>() as f64 / 1e18);
+        info!("   - Gas Price: {} wei ({} gwei)", victim_tx.gas_price, victim_tx.gas_price.to::<u128>() as f64 / 1e9);
+        info!("   - Gas Limit: {}", victim_tx.gas_limit);
+        info!("   - Nonce: {}", victim_tx.nonce);
+        info!("   - Input Data Length: {} bytes", victim_tx.input.len());
+        info!("   - Is DEX: {}", victim_tx.is_dex_interaction);
+        
         let pool_address = match victim_tx.target_pool {
-            Some(addr) => addr,
-            None => return Ok(None),
+            Some(addr) => {
+                info!("   - Target Pool: {:#x}", addr);
+                addr
+            },
+            None => {
+                info!("   - No target pool identified, skipping analysis");
+                return Ok(None);
+            },
         };
 
         // Create sandwich target for simulation
+        info!("🎯 Creating sandwich target for analysis...");
         let mock_target = self
             .create_sandwich_target(&victim_tx, pool_address)
             .await?;
@@ -398,6 +420,14 @@ impl MempoolMonitor {
             "✅ Successfully created sandwich target for pool: {:#x}",
             pool_address
         );
+        
+        info!("📊 SANDWICH TARGET DETAILS:");
+        info!("   - Pool Address: {}", mock_target.pool.address);
+        info!("   - Pool Protocol: {}", mock_target.pool.protocol);
+        info!("   - Token0: {}", mock_target.pool.token0);
+        info!("   - Token1: {}", mock_target.pool.token1);
+        info!("   - Recommended Frontrun: {} wei", mock_target.recommended_frontrun_amount);
+        info!("   - Trade Direction: {:?}", mock_target.victim_trade_direction);
 
         // Simulate the sandwich attack (temporarily mocked to avoid simulator hang)
         info!(
@@ -699,6 +729,10 @@ impl MempoolMonitor {
 
         // Extract function selector (first 4 bytes)
         let function_selector = &input_data[0..4];
+        
+        info!("🔍 Function selector: 0x{}", hex::encode(function_selector));
+        info!("🔍 Input data length: {} bytes", input_data.len());
+        info!("🔍 Input data (first 100 bytes): 0x{}", hex::encode(&input_data[..std::cmp::min(100, input_data.len())]));
 
         // Common Uniswap V2 Router function selectors
         match function_selector {
@@ -717,6 +751,57 @@ impl MempoolMonitor {
                 info!("📊 Detected swapExactTokensForETH");
                 self.parse_uniswap_v2_swap(&input_data[4..]).await
             }
+            // swapTokensForExactTokens(uint256,uint256,address[],address,uint256)
+            [0x8f, 0x0e, 0x15, 0xa4] => {
+                info!("📊 Detected swapTokensForExactTokens");
+                self.parse_uniswap_v2_swap(&input_data[4..]).await
+            }
+            // swapTokensForExactETH(uint256,uint256,address[],address,uint256)
+            [0x4a, 0x25, 0xa9, 0x4a] => {
+                info!("📊 Detected swapTokensForExactETH");
+                self.parse_uniswap_v2_swap(&input_data[4..]).await
+            }
+            // swapETHForExactTokens(uint256,address[],address,uint256)
+            [0xfb, 0x3b, 0xdb, 0x41] => {
+                info!("📊 Detected swapETHForExactTokens");
+                self.parse_uniswap_v2_eth_swap(&input_data[4..]).await
+            }
+            // swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+            [0x79, 0x1a, 0xc9, 0x47] => {
+                info!("📊 Detected swapExactTokensForTokensSupportingFeeOnTransferTokens");
+                self.parse_uniswap_v2_swap(&input_data[4..]).await
+            }
+            // Uniswap V3 Router functions
+            // exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
+            [0x41, 0x4b, 0xf3, 0x89] => {
+                info!("📊 Detected Uniswap V3 exactInputSingle");
+                self.parse_uniswap_v3_exact_input_single(&input_data[4..]).await
+            }
+            // exactInput((bytes,address,uint256,uint256,uint256))
+            [0xb8, 0x58, 0x18, 0x3f] => {
+                info!("📊 Detected Uniswap V3 exactInput");
+                self.parse_uniswap_v3_exact_input(&input_data[4..]).await
+            }
+            // exactOutputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
+            [0xdb, 0x3e, 0x21, 0x98] => {
+                info!("📊 Detected Uniswap V3 exactOutputSingle");
+                self.parse_uniswap_v3_exact_output_single(&input_data[4..]).await
+            }
+            // multicall(bytes[])
+            [0xac, 0x96, 0x50, 0xd8] => {
+                info!("📊 Detected Uniswap V3 multicall (0xac9650d8)");
+                self.parse_uniswap_v3_multicall(&input_data[4..]).await
+            }
+            // multicall(uint256,bytes[]) - Uniswap V3 Router V2
+            [0x5a, 0xe4, 0x01, 0xdc] => {
+                info!("📊 Detected Uniswap V3 multicall with deadline (0x5ae401dc)");
+                self.parse_uniswap_v3_multicall(&input_data[4..]).await
+            }
+            // removeLiquidityETHWithPermit and other functions
+            [0xde, 0xd9, 0x38, 0x2a] => {
+                info!("📊 Detected router function (0xded9382a) - attempting V2 parsing");
+                self.parse_uniswap_v2_swap(&input_data[4..]).await
+            }
             _ => {
                 debug!(
                     "🔍 Unknown router function selector: 0x{}",
@@ -729,29 +814,45 @@ impl MempoolMonitor {
 
     /// Parse Uniswap V2 swap (5 parameters: amountIn, amountOutMin, path, to, deadline)
     async fn parse_uniswap_v2_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        info!("🔧 === PARSING UNISWAP V2 SWAP ===");
+        info!("📊 Input data length: {} bytes", params_data.len());
+        
         if params_data.len() < 160 {
             info!(
-                "🔍 Insufficient data for Uniswap V2 swap: {} bytes",
+                "🔍 Insufficient data for Uniswap V2 swap: {} bytes (minimum: 160)",
                 params_data.len()
             );
             return Ok(None);
         }
 
+        // Show hex dump of first 200 bytes for debugging
+        if params_data.len() > 0 {
+            let dump_len = std::cmp::min(200, params_data.len());
+            info!("📋 Hex dump (first {} bytes):", dump_len);
+            for (i, chunk) in params_data[..dump_len].chunks(32).enumerate() {
+                info!("   {:02x}: {}", i * 32, hex::encode(chunk));
+            }
+        }
+
         // Path is 3rd parameter (index 2) - offset is at bytes 64-95 (32-byte word)
-        // Read the offset value from the correct location
+        // Read the offset value from the last 4 bytes of the 32-byte word
         if params_data.len() < 96 {
-            info!("🔍 Not enough data to read path offset");
+            info!("🔍 Not enough data to read path offset: {} bytes", params_data.len());
             return Ok(None);
         }
 
         let path_offset = u32::from_be_bytes([
-            params_data[64 + 28],
-            params_data[64 + 29],
-            params_data[64 + 30],
-            params_data[64 + 31],
+            params_data[92],  // Last 4 bytes of the 32-byte offset word
+            params_data[93],
+            params_data[94],
+            params_data[95],
         ]) as usize;
 
-        info!("🔍 Path offset: {}", path_offset);
+        info!("🔍 Path offset: {} bytes (0x{:x})", path_offset, path_offset);
+        
+        // Show the raw bytes we read for the offset
+        info!("🔍 Path offset bytes: 0x{}", hex::encode(&params_data[92..96]));
+        info!("🔍 Full offset word: 0x{}", hex::encode(&params_data[64..96]));
 
         // Validate offset is within bounds
         if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
@@ -763,7 +864,7 @@ impl MempoolMonitor {
             return Ok(None);
         }
 
-        // Read array length (first 32 bytes at offset)
+        // Read array length (first 32 bytes at offset) - take last 4 bytes 
         let path_length = u32::from_be_bytes([
             params_data[path_offset + 28],
             params_data[path_offset + 29],
@@ -771,10 +872,17 @@ impl MempoolMonitor {
             params_data[path_offset + 31],
         ]) as usize;
 
-        info!("🔍 Path length: {}", path_length);
+        info!("🔍 Path length: {} tokens", path_length);
+        info!("🔍 Path length bytes: 0x{}", hex::encode(&params_data[path_offset + 28..path_offset + 32]));
+        info!("🔍 Full length word: 0x{}", hex::encode(&params_data[path_offset..path_offset + 32]));
 
         if path_length < 2 {
-            info!("🔍 Path too short: {}", path_length);
+            info!("🔍 Path too short: {} tokens (minimum: 2)", path_length);
+            return Ok(None);
+        }
+        
+        if path_length > 10 {
+            info!("⚠️ Path unusually long: {} tokens - possible parsing error", path_length);
             return Ok(None);
         }
 
@@ -793,24 +901,62 @@ impl MempoolMonitor {
 
         // Extract first and last token addresses (each address is 32 bytes with 12 byte padding)
         let token0_start = tokens_start + 12; // Skip padding
-        let token1_start = tokens_start + 32 + 12; // Next address + skip padding
+        let token1_start = tokens_start + (path_length - 1) * 32 + 12; // Last token + skip padding
+        
+        info!("🔍 Token extraction positions:");
+        info!("   - tokens_start: {}", tokens_start);
+        info!("   - token0_start: {}", token0_start);
+        info!("   - token1_start: {}", token1_start);
+
+        if token0_start + 20 > params_data.len() || token1_start + 20 > params_data.len() {
+            info!(
+                "🔍 Token positions out of bounds: token0_end={}, token1_end={}, data_len={}",
+                token0_start + 20, token1_start + 20, params_data.len()
+            );
+            return Ok(None);
+        }
 
         let token0_bytes = &params_data[token0_start..token0_start + 20];
         let token1_bytes = &params_data[token1_start..token1_start + 20];
 
         let token0 = Address::from_slice(token0_bytes);
         let token1 = Address::from_slice(token1_bytes);
+        
+        // Extract amounts from V2 swap (amountIn and amountOutMin are first two 32-byte parameters)
+        let amount_in = if params_data.len() >= 32 {
+            u64::from_be_bytes([
+                params_data[24], params_data[25], params_data[26], params_data[27],
+                params_data[28], params_data[29], params_data[30], params_data[31],
+            ])
+        } else { 0 };
 
-        info!("🔍 Extracted token pair: {} -> {}", token0, token1);
+        let amount_out_min = if params_data.len() >= 64 {
+            u64::from_be_bytes([
+                params_data[56], params_data[57], params_data[58], params_data[59],
+                params_data[60], params_data[61], params_data[62], params_data[63],
+            ])
+        } else { 0 };
+        
+        info!("🔍 Extracted amounts:");
+        info!("   - Amount In: {} wei ({} ETH)", amount_in, amount_in as f64 / 1e18);
+        info!("   - Amount Out Min: {} wei ({} ETH)", amount_out_min, amount_out_min as f64 / 1e18);
+        info!("🔍 Extracted token addresses:");
+        info!("   - Token 0: {} (bytes: 0x{})", token0, hex::encode(token0_bytes));
+        info!("   - Token {} (last): {} (bytes: 0x{})", path_length - 1, token1, hex::encode(token1_bytes));
+
+        info!("🔍 Token pair for pool lookup: {} -> {}", token0, token1);
 
         self.find_pool_for_token_pair(token0, token1).await
     }
 
     /// Parse Uniswap V2 ETH swap (4 parameters: amountOutMin, path, to, deadline)
     async fn parse_uniswap_v2_eth_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        info!("🔧 === PARSING UNISWAP V2 ETH SWAP ===");
+        info!("📊 Input data length: {} bytes", params_data.len());
+        
         if params_data.len() < 128 {
             info!(
-                "🔍 Insufficient data for ETH swap: {} bytes",
+                "🔍 Insufficient data for ETH swap: {} bytes (minimum: 128)",
                 params_data.len()
             );
             return Ok(None);
@@ -818,18 +964,19 @@ impl MempoolMonitor {
 
         // Path is 2nd parameter (index 1) - offset is at bytes 32-63
         if params_data.len() < 64 {
-            info!("🔍 Not enough data to read ETH swap path offset");
+            info!("🔍 Not enough data to read ETH swap path offset: {} bytes", params_data.len());
             return Ok(None);
         }
 
         let path_offset = u32::from_be_bytes([
-            params_data[32 + 28],
-            params_data[32 + 29],
-            params_data[32 + 30],
-            params_data[32 + 31],
+            params_data[60],  // Last 4 bytes of the path offset word (bytes 32-63)
+            params_data[61],
+            params_data[62],
+            params_data[63],
         ]) as usize;
 
-        info!("🔍 ETH swap path offset: {}", path_offset);
+        info!("🔍 ETH swap path offset: {} bytes (0x{:x})", path_offset, path_offset);
+        info!("🔍 ETH swap path offset bytes: 0x{}", hex::encode(&params_data[60..64]));
 
         // Validate offset is within bounds
         if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
@@ -849,10 +996,15 @@ impl MempoolMonitor {
             params_data[path_offset + 31],
         ]) as usize;
 
-        info!("🔍 ETH swap path length: {}", path_length);
+        info!("🔍 ETH swap path length: {} tokens", path_length);
 
         if path_length < 2 {
-            info!("🔍 ETH swap path too short: {}", path_length);
+            info!("🔍 ETH swap path too short: {} tokens", path_length);
+            return Ok(None);
+        }
+        
+        if path_length > 10 {
+            info!("⚠️ ETH swap path unusually long: {} tokens - possible parsing error", path_length);
             return Ok(None);
         }
 
@@ -879,9 +1031,223 @@ impl MempoolMonitor {
         let token0 = Address::from_slice(token0_bytes);
         let token1 = Address::from_slice(token1_bytes);
 
+        // Extract amountOutMin (first parameter, bytes 0-31, take last 8 bytes as u64)
+        let amount_out_min = if params_data.len() >= 32 {
+            u64::from_be_bytes([
+                params_data[24], params_data[25], params_data[26], params_data[27],
+                params_data[28], params_data[29], params_data[30], params_data[31],
+            ])
+        } else {
+            0
+        };
+
+        info!("🔍 ETH swap extracted amounts:");
+        info!("   - Amount Out Min: {} wei ({} ETH)", amount_out_min, amount_out_min as f64 / 1e18);
         info!("🔍 ETH swap extracted token pair: {} -> {}", token0, token1);
 
         self.find_pool_for_token_pair(token0, token1).await
+    }
+
+    /// Parse Uniswap V3 exactInputSingle function
+    /// Function signature: exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
+    async fn parse_uniswap_v3_exact_input_single(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        info!("🔧 === PARSING UNISWAP V3 EXACT INPUT SINGLE ===");
+        info!("📊 Input data length: {} bytes", params_data.len());
+        
+        if params_data.len() < 256 {
+            info!("🔍 Insufficient data for V3 exactInputSingle: {} bytes (minimum: 256)", params_data.len());
+            return Ok(None);
+        }
+
+        // Parameters are packed in a struct at offset 0
+        // tokenIn (address): bytes 12-31 (first 32 bytes, skip padding)
+        // tokenOut (address): bytes 44-63 (second 32 bytes, skip padding)
+        
+        let token_in_bytes = &params_data[12..32];
+        let token_out_bytes = &params_data[44..64];
+
+        let token_in = Address::from_slice(token_in_bytes);
+        let token_out = Address::from_slice(token_out_bytes);
+
+        // Extract amount from V3 exactInputSingle struct
+        // amountIn is typically at bytes 128-159 (5th parameter in struct)
+        let amount_in = if params_data.len() >= 160 {
+            u64::from_be_bytes([
+                params_data[152], params_data[153], params_data[154], params_data[155],
+                params_data[156], params_data[157], params_data[158], params_data[159],
+            ])
+        } else { 0 };
+
+        info!("🔍 V3 exactInputSingle extracted amounts:");
+        info!("   - Amount In: {} wei ({} ETH)", amount_in, amount_in as f64 / 1e18);
+        info!("🔍 V3 exactInputSingle extracted tokens: {} -> {}", token_in, token_out);
+
+        self.find_pool_for_token_pair(token_in, token_out).await
+    }
+
+    /// Parse Uniswap V3 exactInput function (multi-hop)
+    /// Function signature: exactInput((bytes,address,uint256,uint256,uint256))
+    async fn parse_uniswap_v3_exact_input(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        info!("🔧 === PARSING UNISWAP V3 EXACT INPUT (MULTI-HOP) ===");
+        info!("📊 Input data length: {} bytes", params_data.len());
+        
+        if params_data.len() < 160 {
+            info!("🔍 Insufficient data for V3 exactInput: {} bytes (minimum: 160)", params_data.len());
+            return Ok(None);
+        }
+
+        // The path is encoded in the first parameter (bytes)
+        // For now, extract the first and last tokens from the path
+        // This is a simplified implementation - V3 paths are more complex
+        
+        // Path offset is at bytes 0-31 (first parameter)
+        let path_offset = u32::from_be_bytes([
+            params_data[28], params_data[29], params_data[30], params_data[31]
+        ]) as usize;
+
+        info!("🔍 V3 path offset: {} bytes", path_offset);
+
+        if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
+            info!("🔍 V3 path offset out of bounds");
+            return Ok(None);
+        }
+
+        // Path length
+        let path_length = u32::from_be_bytes([
+            params_data[path_offset + 28], params_data[path_offset + 29], 
+            params_data[path_offset + 30], params_data[path_offset + 31]
+        ]) as usize;
+
+        info!("🔍 V3 path length: {} bytes", path_length);
+
+        if path_length < 43 { // Minimum: 20 (token) + 3 (fee) + 20 (token)
+            info!("🔍 V3 path too short: {} bytes", path_length);
+            return Ok(None);
+        }
+
+        // Extract first token (bytes 0-19 of path data)
+        let path_start = path_offset + 32;
+        if path_start + 20 > params_data.len() || path_start + path_length > params_data.len() {
+            info!("🔍 V3 path data out of bounds");
+            return Ok(None);
+        }
+
+        let token_in_bytes = &params_data[path_start..path_start + 20];
+        // Last token is at path_start + path_length - 20
+        let token_out_bytes = &params_data[path_start + path_length - 20..path_start + path_length];
+
+        let token_in = Address::from_slice(token_in_bytes);
+        let token_out = Address::from_slice(token_out_bytes);
+
+        info!("🔍 V3 exactInput extracted tokens: {} -> {}", token_in, token_out);
+
+        self.find_pool_for_token_pair(token_in, token_out).await
+    }
+
+    /// Parse Uniswap V3 exactOutputSingle function
+    async fn parse_uniswap_v3_exact_output_single(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        info!("🔧 === PARSING UNISWAP V3 EXACT OUTPUT SINGLE ===");
+        // Similar structure to exactInputSingle
+        self.parse_uniswap_v3_exact_input_single(params_data).await
+    }
+
+    /// Parse Uniswap V3 multicall function
+    async fn parse_uniswap_v3_multicall(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        info!("🔧 === PARSING UNISWAP V3 MULTICALL ===");
+        info!("📊 Input data length: {} bytes", params_data.len());
+        
+        // Multicall is complex - it contains multiple function calls
+        // For now, just try to extract the first function call
+        if params_data.len() < 64 {
+            info!("🔍 Insufficient data for V3 multicall: {} bytes", params_data.len());
+            return Ok(None);
+        }
+
+        // Array offset is at bytes 0-31
+        let array_offset = u32::from_be_bytes([
+            params_data[28], params_data[29], params_data[30], params_data[31]
+        ]) as usize;
+
+        info!("🔍 V3 multicall array offset: {} bytes", array_offset);
+
+        if array_offset >= params_data.len() || array_offset + 64 > params_data.len() {
+            info!("🔍 V3 multicall offset out of bounds");
+            return Ok(None);
+        }
+
+        // Array length
+        let array_length = u32::from_be_bytes([
+            params_data[array_offset + 28], params_data[array_offset + 29],
+            params_data[array_offset + 30], params_data[array_offset + 31]
+        ]) as usize;
+
+        info!("🔍 V3 multicall array length: {} calls", array_length);
+
+        if array_length == 0 || array_length > 10 {
+            info!("🔍 V3 multicall invalid array length: {}", array_length);
+            return Ok(None);
+        }
+
+        // Get first call data offset
+        let first_call_offset_pos = array_offset + 32;
+        if first_call_offset_pos + 32 > params_data.len() {
+            info!("🔍 V3 multicall first call offset out of bounds");
+            return Ok(None);
+        }
+
+        let first_call_offset = array_offset + u32::from_be_bytes([
+            params_data[first_call_offset_pos + 28], params_data[first_call_offset_pos + 29],
+            params_data[first_call_offset_pos + 30], params_data[first_call_offset_pos + 31]
+        ]) as usize;
+
+        info!("🔍 V3 multicall first call offset: {} bytes", first_call_offset);
+
+        if first_call_offset >= params_data.len() || first_call_offset + 36 > params_data.len() {
+            info!("🔍 V3 multicall first call data out of bounds");
+            return Ok(None);
+        }
+
+        // Get first call data length
+        let first_call_length = u32::from_be_bytes([
+            params_data[first_call_offset + 28], params_data[first_call_offset + 29],
+            params_data[first_call_offset + 30], params_data[first_call_offset + 31]
+        ]) as usize;
+
+        info!("🔍 V3 multicall first call length: {} bytes", first_call_length);
+
+        if first_call_length < 4 || first_call_offset + 32 + first_call_length > params_data.len() {
+            info!("🔍 V3 multicall first call invalid");
+            return Ok(None);
+        }
+
+        // Extract and analyze the first function call
+        let first_call_data = &params_data[first_call_offset + 32..first_call_offset + 32 + first_call_length];
+        
+        if first_call_data.len() < 4 {
+            info!("🔍 V3 multicall first call too short");
+            return Ok(None);
+        }
+        
+        let inner_selector = &first_call_data[0..4];
+        info!("🔍 V3 multicall first call selector: 0x{}", hex::encode(inner_selector));
+
+        // Handle common inner functions directly instead of recursing
+        match inner_selector {
+            // exactInputSingle
+            [0x41, 0x4b, 0xf3, 0x89] => {
+                info!("🔍 V3 multicall contains exactInputSingle");
+                self.parse_uniswap_v3_exact_input_single(&first_call_data[4..]).await
+            }
+            // exactInput
+            [0xb8, 0x58, 0x18, 0x3f] => {
+                info!("🔍 V3 multicall contains exactInput");
+                self.parse_uniswap_v3_exact_input(&first_call_data[4..]).await
+            }
+            _ => {
+                info!("🔍 V3 multicall contains unknown function: 0x{}", hex::encode(inner_selector));
+                Ok(None)
+            }
+        }
     }
 
     /// Find pool for token pair with enhanced discovery
@@ -906,23 +1272,90 @@ impl MempoolMonitor {
             return Ok(Some(pool_address));
         }
 
-        // If no pool found in static database, try dynamic discovery (TODO: Implement)
-        // if let Some(discovery_service) = &self.dynamic_discovery {
-        //     info!("🔍 No pool found in database, attempting dynamic discovery for {} <-> {}", token0, token1);
-        //
-        //     let discovered_pools = discovery_service.discover_pools(token0, token1).await?;
-        //
-        //     if let Some(discovered_pool) = discovered_pools.first() {
-        //         info!("✨ Dynamic discovery found pool: {} ({})", discovered_pool.address, discovered_pool.protocol);
-        //         return Ok(Some(discovered_pool.address));
-        //     }
-        // }
+        // If no pool found in static database, try dynamic discovery
+        info!("🔍 No pool found in database, attempting dynamic discovery for {} <-> {}", token0, token1);
+        
+        if let Some(discovered_pool) = self.discover_pool_dynamically(token0, token1).await? {
+            info!("✨ Dynamic discovery found pool: {} (UniswapV2)", discovered_pool);
+            
+            // Add to database for future lookups
+            let new_pool = crate::pool_db::DexPool {
+                address: format!("{:#x}", discovered_pool),
+                protocol: "UniswapV2".to_string(),
+                token0: Some(format!("{:#x}", token0)),
+                token1: Some(format!("{:#x}", token1)),
+                chain_id: 1,
+            };
+            
+            if let Err(e) = self.pool_db.add_pool(&new_pool) {
+                debug!("⚠️ Failed to add discovered pool to database: {}", e);
+            } else {
+                info!("💾 Added discovered pool to database");
+            }
+            
+            return Ok(Some(discovered_pool));
+        }
 
         info!(
             "🔍 No pool found for token pair {} -> {} after all discovery methods",
             token0, token1
         );
         Ok(None)
+    }
+
+    /// Discover pool dynamically using CREATE2 address calculation
+    async fn discover_pool_dynamically(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
+        // Uniswap V2 Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f
+        // Init code hash: 0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f
+        
+        let factory = Address::from_str("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f")?;
+        let init_code_hash = "0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f";
+        
+        // Sort tokens (Uniswap V2 requires token0 < token1)
+        let (sorted_token0, sorted_token1) = if token0 < token1 {
+            (token0, token1)
+        } else {
+            (token1, token0)
+        };
+        
+        // Calculate CREATE2 address
+        // address = keccak256(0xff + factory + salt + init_code_hash)[12:]
+        // salt = keccak256(abi.encodePacked(token0, token1))
+        
+        // Create salt: keccak256(token0 + token1)
+        let mut salt_input = Vec::new();
+        salt_input.extend_from_slice(sorted_token0.as_slice());
+        salt_input.extend_from_slice(sorted_token1.as_slice());
+        let salt = keccak256(&salt_input);
+        
+        // Create CREATE2 input: 0xff + factory + salt + init_code_hash
+        let mut create2_input = Vec::new();
+        create2_input.push(0xff);
+        create2_input.extend_from_slice(factory.as_slice());
+        create2_input.extend_from_slice(salt.as_slice());
+        create2_input.extend_from_slice(&hex::decode(&init_code_hash[2..]).map_err(|e| anyhow::anyhow!("Invalid init code hash: {}", e))?);
+        
+        let pool_hash = keccak256(&create2_input);
+        let pool_address = Address::from_slice(&pool_hash[12..]);
+        
+        info!("🧮 Calculated pool address for {}/{}: {}", sorted_token0, sorted_token1, pool_address);
+        
+        // Verify pool exists by checking if it has code
+        match self.eth_client.get_code(pool_address).await {
+            Ok(code) => {
+                if !code.is_empty() && code != "0x" {
+                    info!("✅ Pool {} has code - exists on chain", pool_address);
+                    Ok(Some(pool_address))
+                } else {
+                    info!("❌ Pool {} has no code - doesn't exist", pool_address);
+                    Ok(None)
+                }
+            }
+            Err(e) => {
+                debug!("⚠️ Error checking pool code: {}", e);
+                Ok(None)
+            }
+        }
     }
 
     /// Run basic sandwich simulation without EnhancedSandwichSimulator
@@ -932,50 +1365,164 @@ impl MempoolMonitor {
         pool_details: &crate::pool_db::DexPool,
     ) -> Result<Option<crate::enhanced_revm_simulator::EnhancedSandwichResult>> {
         use crate::pool_state_fetcher::PoolStateFetcher;
+        
+        let sim_id = format!("basic_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        
+        info!("🧮 === BASIC SANDWICH SIMULATION STARTED ===");
+        info!("📊 Simulation ID: {}", sim_id);
+        info!("🎯 SIMULATION INPUTS:");
+        info!("   - Victim TX: {}", victim_tx.hash);
+        info!("   - Pool Address: {}", pool_details.address);
+        info!("   - Pool Protocol: {}", pool_details.protocol);
+        info!("   - Pool Token0: {:?}", pool_details.token0);
+        info!("   - Pool Token1: {:?}", pool_details.token1);
+        info!("   - Pool Protocol: {}", pool_details.protocol);
 
         // Create a basic pool state fetcher for simulation
+        info!("📡 Creating pool state fetcher...");
         let pool_fetcher = PoolStateFetcher::new(&format!("http://192.168.0.14:8545")).await?;
         let pool_address = pool_details.address.parse::<Address>()?;
+        info!("   - Pool Address Parsed: {:#x}", pool_address);
 
         // Fetch current pool state
+        info!("🔍 Fetching current pool state from blockchain...");
         let pool_state = pool_fetcher
             .fetch_pool_state(pool_address, &pool_details.protocol)
             .await?;
+            
+        info!("📊 FETCHED POOL STATE:");
+        info!("   - Pool Address: {}", pool_state.address);
+        info!("   - Token0: {}", pool_state.token0);
+        info!("   - Token1: {}", pool_state.token1);
+        info!("   - Reserve0: {} wei", pool_state.reserve0);
+        info!("   - Reserve1: {} wei", pool_state.reserve1);
+        info!("   - Protocol: {}", pool_state.protocol);
 
         // Basic profitability calculation
+        info!("💰 Extracting trade amount from victim transaction...");
         let victim_amount = self.extract_trade_amount(victim_tx)?;
-        let frontrun_amount = victim_amount / 2.0; // Use half the victim's amount
-
-        // Simple price impact calculation (basic AMM formula)
-        let price_impact = self.calculate_price_impact(&pool_state, victim_amount)?;
-
-        // Estimate profit based on price impact
-        let estimated_profit = frontrun_amount * price_impact;
-        let gas_cost = 0.003; // Estimate 3 transactions * ~100k gas each * 30 gwei
-        let net_profit = estimated_profit - gas_cost;
-        info!("💰 Net profit: {}", net_profit);
+        
+        info!("🧮 TRADE AMOUNT CALCULATIONS:");
+        info!("   - Victim Amount: {} ETH", victim_amount);
+        
+        // Binary search for optimal frontrun amount
+        let mut low_multiplier = 0.1;
+        let mut high_multiplier = 10.0;
+        let precision = 0.01; // 1% precision
+        let mut best_profit = 0.0;
+        let mut best_frontrun_amount = 0.0;
+        let mut iteration = 0;
+        
+        info!("🔍 === BINARY SEARCH FOR OPTIMAL FRONTRUN AMOUNT ===");
+        
+        while (high_multiplier - low_multiplier) > precision && iteration < 10 {
+            iteration += 1;
+            
+            // Test three points: low, mid, high
+            let mid_multiplier = (low_multiplier + high_multiplier) / 2.0;
+            let test_points = vec![
+                (low_multiplier, "low"),
+                (mid_multiplier, "mid"), 
+                (high_multiplier, "high")
+            ];
+            
+            let mut profits = Vec::new();
+            
+            for (multiplier, label) in test_points {
+                let frontrun_amount = victim_amount * multiplier;
+                
+                info!("📊 Iteration {}: Testing {} point: {} ETH ({}x victim)", 
+                     iteration, label, frontrun_amount, multiplier);
+                
+                // Simple price impact calculation (basic AMM formula)
+                let price_impact = self.calculate_price_impact(&pool_state, victim_amount)?;
+                
+                // Estimate profit based on price impact
+                let estimated_profit = frontrun_amount * price_impact;
+                
+                // Calculate dynamic gas cost based on current network conditions
+                let current_gas_price_gwei = match self.eth_client.get_current_gas_price_wei().await {
+                    Ok(gas_price_wei) => gas_price_wei as f64 / 1e9,
+                    Err(_) => 30.0, // Fallback to 30 gwei if we can't fetch current price
+                };
+                
+                // Estimate gas usage: frontrun (100k) + victim (200k) + backrun (100k) = 400k total
+                let total_gas_units = 400_000.0;
+                let gas_cost = total_gas_units * current_gas_price_gwei * 1e-9; // Convert gwei to ETH
+                let net_profit = estimated_profit - gas_cost;
+                
+                info!("   - Price Impact: {:.6}", price_impact);
+                info!("   - Estimated Profit: {} ETH", estimated_profit);
+                info!("   - Current Gas Price: {:.1} gwei", current_gas_price_gwei);
+                info!("   - Gas Cost: {:.6} ETH ({:.0}k gas units)", gas_cost, total_gas_units / 1000.0);
+                info!("   - Net Profit: {} ETH", net_profit);
+                
+                profits.push((multiplier, frontrun_amount, net_profit));
+                
+                if net_profit > best_profit {
+                    best_profit = net_profit;
+                    best_frontrun_amount = frontrun_amount;
+                }
+            }
+            
+            // Determine which direction to search based on profit curve
+            let low_profit = profits[0].2;
+            let mid_profit = profits[1].2;
+            let high_profit = profits[2].2;
+            
+            if mid_profit >= low_profit && mid_profit >= high_profit {
+                // Peak is around mid, narrow search around it
+                let range = (high_multiplier - low_multiplier) / 4.0;
+                low_multiplier = (mid_multiplier - range).max(0.1);
+                high_multiplier = (mid_multiplier + range).min(10.0);
+                info!("🔍 Peak found at mid, narrowing search: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+            } else if low_profit < mid_profit && mid_profit < high_profit {
+                // Profit increasing, search upper half
+                low_multiplier = mid_multiplier;
+                info!("🔍 Profit increasing, searching upper half: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+            } else {
+                // Profit decreasing or peak in lower half, search lower half
+                high_multiplier = mid_multiplier;
+                info!("🔍 Profit decreasing, searching lower half: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+            }
+        }
+        
+        info!("🏆 === BINARY SEARCH COMPLETE ===");
+        info!("   - Iterations: {}", iteration);
+        info!("   - Final Range: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+        info!("   - Best Frontrun Amount: {} ETH", best_frontrun_amount);
+        info!("   - Best Net Profit: {} ETH", best_profit);
         // Only proceed if profitable
-        if net_profit <= 0.0 {
+        if best_profit <= 0.0 {
+            info!("❌ No profitable frontrun amount found (best: {} ETH)", best_profit);
             return Ok(None);
         }
+        
+        // Calculate final gas cost for result
+        let final_gas_price_gwei = match self.eth_client.get_current_gas_price_wei().await {
+            Ok(gas_price_wei) => gas_price_wei as f64 / 1e9,
+            Err(_) => 30.0, // Fallback to 30 gwei
+        };
+        let final_total_gas_units = 400_000.0;
+        let final_gas_cost = final_total_gas_units * final_gas_price_gwei * 1e-9; // Convert gwei to ETH
 
         let result = crate::enhanced_revm_simulator::EnhancedSandwichResult {
             pool_address,
             protocol: pool_details.protocol.clone(),
             victim_tx_hash: victim_tx.hash.clone(),
             success: true,
-            profit_eth: estimated_profit,
-            profit_usd: estimated_profit * 3200.0, // Assume ETH price
-            gas_used: 300_000,                     // More realistic estimate for analysis
-            gas_cost_eth: gas_cost,
-            net_profit_eth: net_profit,
-            net_profit_usd: net_profit * 3200.0,
-            price_impact,
-            slippage: price_impact * 0.3, // Assume 30% of price impact is slippage
-            risk_score: if price_impact > 0.05 { 80 } else { 20 }, // High risk if >5% impact
+            profit_eth: best_profit + final_gas_cost, // Add back gas cost to get gross profit
+            profit_usd: (best_profit + final_gas_cost) * 3200.0, // Assume ETH price
+            gas_used: final_total_gas_units as u64,                     // Use calculated gas units
+            gas_cost_eth: final_gas_cost,
+            net_profit_eth: best_profit,
+            net_profit_usd: best_profit * 3200.0,
+            price_impact: self.calculate_price_impact(&pool_state, victim_amount)?,
+            slippage: self.calculate_price_impact(&pool_state, victim_amount)? * 0.3, // Assume 30% of price impact is slippage
+            risk_score: if self.calculate_price_impact(&pool_state, victim_amount)? > 0.05 { 80 } else { 20 }, // High risk if >5% impact
             execution_time_ms: 150,
-            frontrun_amount: U256::from((frontrun_amount * 1e18) as u64),
-            backrun_amount: U256::from(((frontrun_amount + estimated_profit) * 1e18) as u64),
+            frontrun_amount: U256::from((best_frontrun_amount * 1e18) as u64),
+            backrun_amount: U256::from(((best_frontrun_amount + best_profit + final_gas_cost) * 1e18) as u64),
             pool_liquidity_before: pool_state.total_liquidity_usd,
             pool_liquidity_after: pool_state.total_liquidity_usd,
             simulation_accuracy: 0.75, // Basic simulation accuracy

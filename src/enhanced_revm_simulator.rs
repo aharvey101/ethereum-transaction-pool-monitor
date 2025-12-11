@@ -5,12 +5,15 @@ use crate::{
     },
 };
 use alloy_primitives::{Address, U256};
+use anyhow::Result;
+
+use std::collections::HashMap;
+use tracing::info;
+
 /// Enhanced REVM Sandwich Simulator with Real Pool State Integration
 ///
 /// This module combines REVM simulation capabilities with the 545k+ pool database
 /// to provide accurate sandwich attack simulations using real blockchain data.
-use anyhow::Result;
-use std::collections::HashMap;
 
 /// Enhanced sandwich simulation result with detailed analytics
 #[allow(dead_code)]
@@ -186,23 +189,64 @@ impl EnhancedSandwichSimulator {
         frontrun_multiplier: f64,
     ) -> Result<EnhancedSandwichResult> {
         let start_time = std::time::Instant::now();
+        let simulation_id = format!("sim_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
 
-        println!("🥪 Enhanced REVM Sandwich Simulation");
+        // === COMPREHENSIVE SIMULATION INPUT LOGGING ===
+        info!("🔬 === ENHANCED SANDWICH SIMULATION STARTED ===");
+        info!("📊 Simulation ID: {}", simulation_id);
+        info!("🎯 TARGET POOL:");
+        info!("   - Address: {}", target.pool.address);
+        info!("   - Protocol: {}", target.pool.protocol);
+        info!("   - Token0: {}", target.pool.token0);
+        info!("   - Token1: {}", target.pool.token1);
+        info!("   - Fee: {} basis points", target.pool.fee);
+        info!("   - Total Liquidity USD: {}", target.pool.total_liquidity_usd);
+        
+        info!("💰 TRADE PARAMETERS:");
+        info!("   - Victim Trade Amount: {} wei ({} ETH)", victim_trade_amount, victim_trade_amount.to::<u128>() as f64 / 1e18);
+        info!("   - Frontrun Multiplier: {:.2}x", frontrun_multiplier);
+        
+        let frontrun_amount = U256::from((victim_trade_amount.to::<u128>() as f64 * frontrun_multiplier) as u128);
+        info!("   - Calculated Frontrun Amount: {} wei ({} ETH)", frontrun_amount, frontrun_amount.to::<u128>() as f64 / 1e18);
+        
+        info!("🎲 SANDWICH TARGET DETAILS:");
+        info!("   - Recommended Frontrun: {} wei", target.recommended_frontrun_amount);
+        info!("   - Pool Reserves Token0: {}", target.pool.reserve0);
+        info!("   - Pool Reserves Token1: {}", target.pool.reserve1);
+
+        println!("🥪 Enhanced REVM Sandwich Simulation [ID: {}]", simulation_id);
         println!(
             "   Pool: {} ({})",
             target.pool.address, target.pool.protocol
         );
 
         // Get fresh pool state
+        info!("📡 Fetching fresh pool state from blockchain...");
         let pool_state = self
             .get_pool_state(target.pool.address, &target.pool.protocol)
             .await?;
 
-        // Calculate optimal frontrun amount
-        let frontrun_amount =
-            U256::from((victim_trade_amount.to::<u128>() as f64 * frontrun_multiplier) as u128);
+        info!("🔍 FRESH POOL STATE:");
+        info!("   - Pool Address: {}", pool_state.address);
+        info!("   - Token0: {}", pool_state.token0);
+        info!("   - Token1: {}", pool_state.token1);
+        info!("   - Current Reserve0: {} wei", pool_state.reserve0);
+        info!("   - Current Reserve1: {} wei", pool_state.reserve1);
+        info!("   - Protocol: {}", pool_state.protocol);
+        info!("   - Fee: {} basis points", pool_state.fee);
+        info!("   - Total Liquidity USD: {}", pool_state.total_liquidity_usd);
+
+        // === SIMULATION SEQUENCE PARAMETERS ===
+        info!("⚙️ SIMULATION SEQUENCE INPUTS:");
+        info!("   - Pool State Address: {}", pool_state.address);
+        info!("   - Victim Trade Amount: {} wei ({} ETH)", victim_trade_amount, victim_trade_amount.to::<u128>() as f64 / 1e18);
+        info!("   - Frontrun Amount: {} wei ({} ETH)", frontrun_amount, frontrun_amount.to::<u128>() as f64 / 1e18);
+        info!("   - Trade Direction: {:?}", target.victim_trade_direction);
+        info!("   - Starting Reserve0: {}", pool_state.reserve0);
+        info!("   - Starting Reserve1: {}", pool_state.reserve1);
 
         // Simulate the sandwich sequence
+        info!("🔄 Starting sandwich sequence simulation...");
         let simulation_result = self
             .simulate_sandwich_sequence(
                 &pool_state,
@@ -267,7 +311,24 @@ impl EnhancedSandwichSimulator {
         frontrun_amount: U256,
         trade_direction: &TradeDirection,
     ) -> Result<SandwichSequenceResult> {
+        info!("🔄 === SANDWICH SEQUENCE SIMULATION STARTED ===");
+        info!("📊 SEQUENCE INPUT PARAMETERS:");
+        info!("   - Initial Pool State:");
+        info!("     • Pool: {}", pool_state.address);
+        info!("     • Reserve0: {} wei", pool_state.reserve0);
+        info!("     • Reserve1: {} wei", pool_state.reserve1);
+        info!("     • Protocol: {}", pool_state.protocol);
+        info!("   - Trade Parameters:");
+        info!("     • Victim Amount: {} wei ({} ETH)", victim_amount, victim_amount.to::<u128>() as f64 / 1e18);
+        info!("     • Frontrun Amount: {} wei ({} ETH)", frontrun_amount, frontrun_amount.to::<u128>() as f64 / 1e18);
+        info!("     • Trade Direction: {:?}", trade_direction);
+
         // Step 1: Frontrun transaction
+        info!("🏃‍♂️ STEP 1: Simulating FRONTRUN transaction");
+        info!("   - Amount In: {} wei ({} ETH)", frontrun_amount, frontrun_amount.to::<u128>() as f64 / 1e18);
+        info!("   - Direction: {:?}", trade_direction);
+        info!("   - Pool Reserves Before: {} / {}", pool_state.reserve0, pool_state.reserve1);
+        
         let frontrun_result = self
             .simulate_trade(
                 pool_state,
@@ -277,7 +338,13 @@ impl EnhancedSandwichSimulator {
             )
             .await?;
 
+        info!("✅ FRONTRUN RESULT:");
+        info!("   - Amount Out: {} wei", frontrun_result.amount_out);
+        info!("   - Price Impact: {:.4}%", frontrun_result.price_impact * 100.0);
+        info!("   - Gas Used: {}", frontrun_result.gas_used);
+
         // Step 2: Update pool state after frontrun
+        info!("🔄 STEP 2: Updating pool state after frontrun");
         let pool_after_frontrun = self
             .apply_trade_to_pool_state(
                 pool_state,
@@ -287,7 +354,18 @@ impl EnhancedSandwichSimulator {
             )
             .await?;
 
+        info!("📊 Pool State After Frontrun:");
+        info!("   - Reserve0: {} wei", pool_after_frontrun.reserve0);
+        info!("   - Reserve1: {} wei", pool_after_frontrun.reserve1);
+        info!("   - Reserve Change0: {} wei", pool_after_frontrun.reserve0.wrapping_sub(pool_state.reserve0));
+        info!("   - Reserve Change1: {} wei", pool_after_frontrun.reserve1.wrapping_sub(pool_state.reserve1));
+
         // Step 3: Victim transaction
+        info!("🎯 STEP 3: Simulating VICTIM transaction");
+        info!("   - Amount In: {} wei ({} ETH)", victim_amount, victim_amount.to::<u128>() as f64 / 1e18);
+        info!("   - Direction: {:?}", trade_direction);
+        info!("   - Pool Reserves Before: {} / {}", pool_after_frontrun.reserve0, pool_after_frontrun.reserve1);
+        
         let victim_result = self
             .simulate_trade(
                 &pool_after_frontrun,
@@ -297,7 +375,13 @@ impl EnhancedSandwichSimulator {
             )
             .await?;
 
+        info!("✅ VICTIM RESULT:");
+        info!("   - Amount Out: {} wei", victim_result.amount_out);
+        info!("   - Price Impact: {:.4}%", victim_result.price_impact * 100.0);
+        info!("   - Gas Used: {}", victim_result.gas_used);
+
         // Step 4: Update pool state after victim
+        info!("🔄 STEP 4: Updating pool state after victim transaction");
         let pool_after_victim = self
             .apply_trade_to_pool_state(
                 &pool_after_frontrun,
@@ -307,11 +391,22 @@ impl EnhancedSandwichSimulator {
             )
             .await?;
 
+        info!("📊 Pool State After Victim:");
+        info!("   - Reserve0: {} wei", pool_after_victim.reserve0);
+        info!("   - Reserve1: {} wei", pool_after_victim.reserve1);
+        info!("   - Reserve Change0: {} wei", pool_after_victim.reserve0.wrapping_sub(pool_after_frontrun.reserve0));
+        info!("   - Reserve Change1: {} wei", pool_after_victim.reserve1.wrapping_sub(pool_after_frontrun.reserve1));
+
         // Step 5: Backrun transaction (reverse direction)
         let backrun_direction = match trade_direction {
             TradeDirection::Token0ToToken1 => TradeDirection::Token1ToToken0,
             TradeDirection::Token1ToToken0 => TradeDirection::Token0ToToken1,
         };
+
+        info!("🔙 STEP 5: Simulating BACKRUN transaction");
+        info!("   - Amount In: {} wei (frontrun output)", frontrun_result.amount_out);
+        info!("   - Direction: {:?} (reversed)", backrun_direction);
+        info!("   - Pool Reserves Before: {} / {}", pool_after_victim.reserve0, pool_after_victim.reserve1);
 
         let backrun_result = self
             .simulate_trade(
@@ -321,6 +416,11 @@ impl EnhancedSandwichSimulator {
                 "Backrun",
             )
             .await?;
+
+        info!("✅ BACKRUN RESULT:");
+        info!("   - Amount Out: {} wei", backrun_result.amount_out);
+        info!("   - Price Impact: {:.4}%", backrun_result.price_impact * 100.0);
+        info!("   - Gas Used: {}", backrun_result.gas_used);
 
         // Calculate overall results
         let profit = if backrun_result.amount_out > frontrun_amount {
@@ -355,6 +455,26 @@ impl EnhancedSandwichSimulator {
         direction: TradeDirection,
         trade_type: &str,
     ) -> Result<TradeResult> {
+        info!("🔍 === {} TRADE SIMULATION ===", trade_type.to_uppercase());
+        info!("📊 TRADE INPUT PARAMETERS:");
+        info!("   - Pool Address: {}", pool_state.address);
+        info!("   - Amount In: {} wei ({} ETH)", amount_in, amount_in.to::<u128>() as f64 / 1e18);
+        info!("   - Trade Direction: {:?}", direction);
+        info!("   - Current Reserve0: {} wei", pool_state.reserve0);
+        info!("   - Current Reserve1: {} wei", pool_state.reserve1);
+        info!("   - Trade Type: {}", trade_type);
+
+        let (reserve_in, reserve_out) = match direction {
+            TradeDirection::Token0ToToken1 => (pool_state.reserve0, pool_state.reserve1),
+            TradeDirection::Token1ToToken0 => (pool_state.reserve1, pool_state.reserve0),
+        };
+
+        info!("🔄 TRADE CALCULATION:");
+        info!("   - Reserve In: {} wei", reserve_in);
+        info!("   - Reserve Out: {} wei", reserve_out);
+        info!("   - Input Token: {}", if matches!(direction, TradeDirection::Token0ToToken1) { "Token0" } else { "Token1" });
+        info!("   - Output Token: {}", if matches!(direction, TradeDirection::Token0ToToken1) { "Token1" } else { "Token0" });
+
         println!(
             "   {} trade: {} {} → ?",
             trade_type,
@@ -366,14 +486,16 @@ impl EnhancedSandwichSimulator {
             }
         );
 
-        let (reserve_in, reserve_out) = match direction {
-            TradeDirection::Token0ToToken1 => (pool_state.reserve0, pool_state.reserve1),
-            TradeDirection::Token1ToToken0 => (pool_state.reserve1, pool_state.reserve0),
-        };
-
         // Uniswap V2 formula: x * y = k
         let amount_in_with_fee = amount_in * U256::from(997) / U256::from(1000); // 0.3% fee
         let amount_out = (amount_in_with_fee * reserve_out) / (reserve_in + amount_in_with_fee);
+
+        info!("⚡ UNISWAP V2 CALCULATION:");
+        info!("   - Amount In (with 0.3% fee): {} wei", amount_in_with_fee);
+        info!("   - Fee Amount: {} wei", amount_in - amount_in_with_fee);
+        info!("   - Formula: (amount_in_with_fee * reserve_out) / (reserve_in + amount_in_with_fee)");
+        info!("   - Calculation: ({} * {}) / ({} + {})", amount_in_with_fee, reserve_out, reserve_in, amount_in_with_fee);
+        info!("   - Amount Out: {} wei ({} ETH)", amount_out, amount_out.to::<u128>() as f64 / 1e18);
 
         // Calculate price impact
         let price_impact = self

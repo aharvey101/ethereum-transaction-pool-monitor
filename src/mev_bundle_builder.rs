@@ -273,17 +273,58 @@ impl MevBundleBuilder {
         &self,
         opportunity: &MempoolOpportunity,
     ) -> Result<BundleSubmissionResult> {
-        info!("🧪 Simulating sandwich attack...");
+        let simulation_id = format!("bundle_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
+        
+        info!("🧪 === MEV BUNDLE BUILDER SIMULATION STARTED ===");
+        info!("📊 Simulation ID: {}", simulation_id);
+        info!("🎯 OPPORTUNITY DETAILS:");
+        info!("   - Victim TX Hash: {}", opportunity.victim_tx.hash);
+        info!("   - Victim TX From: {}", opportunity.victim_tx.from);
+        info!("   - Victim TX To: {:?}", opportunity.victim_tx.to);
+        info!("   - Victim TX Value: {} wei ({} ETH)", opportunity.victim_tx.value, opportunity.victim_tx.value.to::<u128>() as f64 / 1e18);
+        info!("   - Victim TX Gas Limit: {}", opportunity.victim_tx.gas_limit);
+        info!("   - Victim TX Gas Price: {} wei ({} gwei)", opportunity.victim_tx.gas_price, opportunity.victim_tx.gas_price.to::<u128>() as f64 / 1e9);
+        info!("   - Victim TX Nonce: {}", opportunity.victim_tx.nonce);
+        
+        info!("💰 SANDWICH TARGET:");
+        info!("   - Pool Address: {}", opportunity.sandwich_target.pool.address);
+        info!("   - Pool Protocol: {}", opportunity.sandwich_target.pool.protocol);
+        info!("   - Token0: {}", opportunity.sandwich_target.pool.token0);
+        info!("   - Token1: {}", opportunity.sandwich_target.pool.token1);
+        info!("   - Pool Fee: {} basis points", opportunity.sandwich_target.pool.fee);
+        info!("   - Pool Reserve0: {} wei", opportunity.sandwich_target.pool.reserve0);
+        info!("   - Pool Reserve1: {} wei", opportunity.sandwich_target.pool.reserve1);
+        
+        info!("🎲 SANDWICH PARAMETERS:");
+        info!("   - Recommended Frontrun Amount: {} wei ({} ETH)", opportunity.sandwich_target.recommended_frontrun_amount, opportunity.sandwich_target.recommended_frontrun_amount.to::<u128>() as f64 / 1e18);
+        info!("   - Victim Trade Direction: {:?}", opportunity.sandwich_target.victim_trade_direction);
+        
+        info!("📊 PROFIT ESTIMATES:");
+        info!("   - Estimated Profit ETH: {}", opportunity.estimated_profit_eth);
+        info!("   - Confidence Score: {}", opportunity.confidence_score);
+        info!("   - Time Sensitivity: {}", opportunity.time_sensitivity);
+        info!("   - Required Capital ETH: {}", opportunity.required_capital_eth);
 
+        info!("⚡ GAS CALCULATIONS:");
         let estimated_gas = 400_000u64; // More realistic sandwich attack estimate (frontrun + backrun + overhead)
+        info!("   - Estimated Gas Units: {}", estimated_gas);
+        
         let gas_price = opportunity
             .victim_tx
             .gas_price
             .to_string()
             .parse::<u128>()
-            .unwrap_or(500_000_000); // 0.5 gwei fallback instead of 20 gwei
+            .map_err(|_| anyhow::anyhow!("Invalid victim transaction gas price in simulation: {}", opportunity.victim_tx.gas_price))?;
+            
+        info!("   - Gas Price: {} wei ({} gwei)", gas_price, gas_price as f64 / 1e9);
+        
         let gas_cost_eth = (estimated_gas as u128 * gas_price) as f64 / 1e18;
+        info!("   - Gas Cost ETH: {} ETH", gas_cost_eth);
+        
         let estimated_profit = opportunity.estimated_profit_eth - gas_cost_eth;
+        info!("   - Net Profit Estimate: {} ETH (Gross: {} - Gas: {})", estimated_profit, opportunity.estimated_profit_eth, gas_cost_eth);
+        
+        info!("🧪 Simulating sandwich attack...");
 
         Ok(BundleSubmissionResult {
             bundle_hash: None,
