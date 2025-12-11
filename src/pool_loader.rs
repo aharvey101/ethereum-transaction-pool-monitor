@@ -1,8 +1,8 @@
-use anyhow::Result;
-use crate::pool_fetcher::{PoolFetcher, ProgressCallback};
 use crate::pool_db::PoolDatabase;
-use tokio::sync::mpsc;
+use crate::pool_fetcher::{PoolFetcher, ProgressCallback};
+use anyhow::Result;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// Messages sent from the background pool loader to the main app
 #[derive(Clone, Debug)]
@@ -16,8 +16,7 @@ pub enum PoolLoaderMessage {
 }
 
 /// Background task that loads pools from the blockchain
-pub struct BackgroundPoolLoader {
-}
+pub struct BackgroundPoolLoader {}
 
 impl BackgroundPoolLoader {
     /// Create a new background pool loader and spawn the task
@@ -54,24 +53,33 @@ impl BackgroundPoolLoader {
         let use_sequential = std::env::var("USE_SEQUENTIAL_SCAN").is_ok();
         let force_refresh = std::env::var("FORCE_POOL_REFRESH").is_ok();
         let existing_pool_count = pool_db.pool_count().unwrap_or(0);
-        
+
         if use_sequential {
             tracing::info!("Sequential scanning enabled - using original pool fetching");
         } else {
             tracing::info!("Parallel scanning enabled (default) - using enhanced pool fetching");
         }
-        
+
         if !force_refresh && existing_pool_count >= 1000 {
-            tracing::info!("Sufficient pools already in database ({}), skipping pool loading", existing_pool_count);
+            tracing::info!(
+                "Sufficient pools already in database ({}), skipping pool loading",
+                existing_pool_count
+            );
             tracing::info!("Use FORCE_POOL_REFRESH=1 to force a complete refresh");
             let _ = tx.send(PoolLoaderMessage::Complete(0, 0, existing_pool_count));
             return Ok(());
         }
-        
+
         if force_refresh {
-            tracing::info!("FORCE_POOL_REFRESH enabled - starting complete pool scan (existing: {})", existing_pool_count);
+            tracing::info!(
+                "FORCE_POOL_REFRESH enabled - starting complete pool scan (existing: {})",
+                existing_pool_count
+            );
         } else {
-            tracing::info!("Pool count low ({}), starting comprehensive pool scan", existing_pool_count);
+            tracing::info!(
+                "Pool count low ({}), starting comprehensive pool scan",
+                existing_pool_count
+            );
         }
 
         // Clear existing pools only if we're doing a full reload
@@ -83,7 +91,7 @@ impl BackgroundPoolLoader {
         if use_sequential {
             // Use the original sequential scanning method
             tracing::info!("Background loader: Using sequential pool scanning");
-            
+
             // Send initial progress
             let _ = tx.send(PoolLoaderMessage::Progress(
                 "UniswapV2: Initializing...".to_string(),
@@ -94,7 +102,10 @@ impl BackgroundPoolLoader {
 
             // Fetch V2 pools
             tracing::info!("Background loader: Fetching UniswapV2 pools");
-            match pool_fetcher.fetch_uniswap_v2_pools(&pool_db, chain_id).await {
+            match pool_fetcher
+                .fetch_uniswap_v2_pools(&pool_db, chain_id)
+                .await
+            {
                 Ok(count) => {
                     tracing::info!("Background loader: Found {} V2 pools", count);
                     v2_count = count;
@@ -125,7 +136,10 @@ impl BackgroundPoolLoader {
 
             // Fetch V3 pools
             tracing::info!("Background loader: Fetching UniswapV3 pools");
-            match pool_fetcher.fetch_uniswap_v3_pools(&pool_db, chain_id).await {
+            match pool_fetcher
+                .fetch_uniswap_v3_pools(&pool_db, chain_id)
+                .await
+            {
                 Ok(count) => {
                     tracing::info!("Background loader: Found {} V3 pools", count);
                     v3_count = count;
@@ -148,7 +162,10 @@ impl BackgroundPoolLoader {
 
             // Fetch V4 pools (if deployed)
             tracing::info!("Background loader: Checking for UniswapV4 pools");
-            match pool_fetcher.fetch_uniswap_v4_pools(&pool_db, chain_id).await {
+            match pool_fetcher
+                .fetch_uniswap_v4_pools(&pool_db, chain_id)
+                .await
+            {
                 Ok(count) => {
                     if count > 0 {
                         tracing::info!("Background loader: Found {} V4 pools", count);
@@ -192,16 +209,22 @@ impl BackgroundPoolLoader {
                             msg,
                             pools_found / 2, // Rough estimate for V2
                             pools_found / 2, // Rough estimate for V3
-                            50, // Progress percentage
+                            50,              // Progress percentage
                         ));
                     },
                 ))))
             };
 
-            match pool_fetcher.fetch_pools_parallel(&pool_db, chain_id, progress_callback).await {
+            match pool_fetcher
+                .fetch_pools_parallel(&pool_db, chain_id, progress_callback)
+                .await
+            {
                 Ok(total_count) => {
-                    tracing::info!("Background loader: Parallel scanning found {} total pools", total_count);
-                    
+                    tracing::info!(
+                        "Background loader: Parallel scanning found {} total pools",
+                        total_count
+                    );
+
                     // Get the actual counts from the database by protocol
                     if let Ok(v2_db_count) = pool_db.get_pool_count_by_protocol("UniswapV2") {
                         v2_count = v2_db_count;
@@ -211,8 +234,10 @@ impl BackgroundPoolLoader {
                     }
 
                     let _ = tx.send(PoolLoaderMessage::Progress(
-                        format!("Parallel scanning complete! {} total pools found (V2: {}, V3: {})", 
-                               total_count, v2_count, v3_count),
+                        format!(
+                            "Parallel scanning complete! {} total pools found (V2: {}, V3: {})",
+                            total_count, v2_count, v3_count
+                        ),
                         v2_count,
                         v3_count,
                         90,

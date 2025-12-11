@@ -78,7 +78,7 @@ impl MevBundleBuilder {
     pub fn new() -> Self {
         Self {
             min_profit_threshold: U256::from(5_000_000_000_000_000u64), // 0.005 ETH
-            max_gas_price: 200_000_000_000,                             // 200 gwei
+            max_gas_price: 5_000_000_000,                               // 5 gwei reasonable ceiling
             coinbase_payment_percent: 10,                               // 10% to miner
             flashbots_relay_url: "https://relay.flashbots.net".to_string(),
         }
@@ -139,7 +139,12 @@ impl MevBundleBuilder {
             .gas_price
             .to_string()
             .parse::<u128>()
-            .unwrap_or(20_000_000_000);
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid victim transaction gas price: {}",
+                    opportunity.victim_tx.gas_price
+                )
+            })?;
         let gas_premium = if aggressive_gas { 20 } else { 5 }; // 20% vs 5%
         let frontrun_gas_price = victim_gas_price + (victim_gas_price * gas_premium / 100);
 

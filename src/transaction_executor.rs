@@ -1,23 +1,22 @@
 /// Direct Mempool Transaction Execution
-/// 
+///
 /// This module provides direct-to-mempool transaction submission similar to arboo's approach.
 /// Unlike Flashbots bundles, these transactions are immediately visible in the public mempool.
-
 use alloy::{
-    primitives::{Address, U256, Bytes, TxHash},
+    network::EthereumWallet,
+    primitives::{Address, Bytes, TxHash, U256},
     providers::{Provider, ProviderBuilder},
-    rpc::types::{TransactionRequest, TransactionInput, TransactionReceipt},
+    rpc::types::{TransactionInput, TransactionReceipt, TransactionRequest},
     signers::local::PrivateKeySigner,
-    network::{EthereumWallet},
-    sol_types::{SolEvent, sol},
+    sol_types::{sol, SolEvent},
 };
 use alloy_primitives::TxKind;
 use anyhow::Result;
 use reqwest::Url;
-use std::{str::FromStr, collections::HashMap, sync::Arc};
-use tokio::sync::RwLock;
-use tracing::{info, debug, error, warn, trace};
 use serde_json::json;
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, trace, warn};
 
 // Define common DEX events for profit calculation
 sol! {
@@ -30,7 +29,7 @@ sol! {
         uint256 amount1Out,
         address indexed to
     );
-    
+
     #[derive(Debug, PartialEq, Eq)]
     event Transfer(
         address indexed from,
@@ -215,13 +214,13 @@ impl DirectMempoolExecutor {
         if let Some(private_key) = &self.private_key {
             let signer = PrivateKeySigner::from_str(private_key)
                 .map_err(|e| anyhow::anyhow!("Invalid private key format: {}", e))?;
-            
+
             let http_url = Url::from_str(&self.rpc_url)
                 .map_err(|e| anyhow::anyhow!("Invalid RPC URL format '{}': {}", self.rpc_url, e))?;
-            
+
             let provider = ProviderBuilder::new().on_http(http_url);
             let from_address = signer.address();
-            
+
             let current_nonce = provider
                 .get_transaction_count(from_address)
                 .await
@@ -244,33 +243,57 @@ impl DirectMempoolExecutor {
         input_data: Vec<u8>,
         value: Option<U256>,
     ) -> Result<TransactionExecutionResult> {
-        let mut current_gas_price = gas_price.unwrap_or(20_000_000_000); // 20 gwei default
+        // Always fetch current gas price if not provided
+        let mut current_gas_price = match gas_price {
+            Some(price) => price,
+            None => {
+                // Create temporary client to fetch current gas price
+                let eth_client = crate::eth_client::EthereumClient::new(&self.rpc_url).await?;
+                eth_client.get_current_gas_price_wei().await? as u128
+            }
+        };
         let mut attempts = 0;
 
         loop {
             attempts += 1;
-            
-            info!("🔄 Transaction attempt {} of {} (gas price: {} gwei)", 
-                 attempts, self.retry_config.max_attempts, current_gas_price / 1_000_000_000);
 
-            match self.send_transaction(
-                contract_address,
-                Some(current_gas_price),
-                gas_limit,
-                base_fee,
-                priority_fee,
-                input_data.clone(),
-                value,
-            ).await {
+            info!(
+                "🔄 Transaction attempt {} of {} (gas price: {} gwei)",
+                attempts,
+                self.retry_config.max_attempts,
+                current_gas_price / 1_000_000_000
+            );
+
+            match self
+                .send_transaction(
+                    contract_address,
+                    Some(current_gas_price),
+                    gas_limit,
+                    base_fee,
+                    priority_fee,
+                    input_data.clone(),
+                    value,
+                )
+                .await
+            {
                 Ok(result) if result.success => {
-                    info!("✅ Transaction successful on attempt {}: {}", attempts, result.tx_hash);
+                    info!(
+                        "✅ Transaction successful on attempt {}: {}",
+                        attempts, result.tx_hash
+                    );
                     return Ok(result);
                 }
                 Ok(result) => {
-                    warn!("⚠️ Transaction failed on attempt {}: {} - {}", 
-                         attempts, result.tx_hash, 
-                         result.error.as_ref().unwrap_or(&"Unknown error".to_string()));
-                    
+                    warn!(
+                        "⚠️ Transaction failed on attempt {}: {} - {}",
+                        attempts,
+                        result.tx_hash,
+                        result
+                            .error
+                            .as_ref()
+                            .unwrap_or(&"Unknown error".to_string())
+                    );
+
                     if attempts >= self.retry_config.max_attempts {
                         return Ok(result); // Return the failed result
                     }
@@ -280,8 +303,11 @@ impl DirectMempoolExecutor {
                         if self.should_retry_error(error) {
                             current_gas_price = self.calculate_retry_gas_price(current_gas_price);
                             let delay = self.calculate_retry_delay(attempts);
-                            warn!("🔄 Retrying with higher gas price {} gwei in {}ms", 
-                                 current_gas_price / 1_000_000_000, delay);
+                            warn!(
+                                "🔄 Retrying with higher gas price {} gwei in {}ms",
+                                current_gas_price / 1_000_000_000,
+                                delay
+                            );
                             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                             continue;
                         } else {
@@ -291,8 +317,11 @@ impl DirectMempoolExecutor {
                     }
                 }
                 Err(e) => {
-                    error!("❌ Transaction submission error on attempt {}: {}", attempts, e);
-                    
+                    error!(
+                        "❌ Transaction submission error on attempt {}: {}",
+                        attempts, e
+                    );
+
                     if attempts >= self.retry_config.max_attempts {
                         return Err(e);
                     }
@@ -300,8 +329,11 @@ impl DirectMempoolExecutor {
                     // For submission errors, also retry with higher gas
                     current_gas_price = self.calculate_retry_gas_price(current_gas_price);
                     let delay = self.calculate_retry_delay(attempts);
-                    warn!("🔄 Retrying transaction submission with gas price {} gwei in {}ms", 
-                         current_gas_price / 1_000_000_000, delay);
+                    warn!(
+                        "🔄 Retrying transaction submission with gas price {} gwei in {}ms",
+                        current_gas_price / 1_000_000_000,
+                        delay
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                 }
             }
@@ -311,7 +343,7 @@ impl DirectMempoolExecutor {
     /// Determine if an error is retryable
     fn should_retry_error(&self, error: &str) -> bool {
         let error_lower = error.to_lowercase();
-        
+
         // Common retryable errors
         if error_lower.contains("timeout") && self.retry_config.retry_on_timeout {
             return true;
@@ -346,7 +378,8 @@ impl DirectMempoolExecutor {
 
     /// Calculate new gas price for retry
     fn calculate_retry_gas_price(&self, current_gas_price: u128) -> u128 {
-        current_gas_price + (current_gas_price * self.retry_config.gas_price_increase_percent as u128 / 100)
+        current_gas_price
+            + (current_gas_price * self.retry_config.gas_price_increase_percent as u128 / 100)
     }
 
     /// Calculate delay for retry with exponential backoff
@@ -365,22 +398,34 @@ impl DirectMempoolExecutor {
             "gas_used": result.gas_used,
             "gas_price_gwei": result.gas_price.map(|p| p / 1_000_000_000),
             "confirmation_time_ms": result.confirmation_time.map(|t| t.as_millis()),
-            "profit_eth": result.profit_calculation.as_ref().map(|p| 
+            "profit_eth": result.profit_calculation.as_ref().map(|p|
                 p.net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18),
             "profit_percentage": result.profit_calculation.as_ref().map(|p| p.profit_percentage),
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
-        
+
         info!("📊 Transaction Metrics: {}", metrics);
-        
+
         // Also log detailed breakdown for successful transactions
         if result.success && result.profit_calculation.is_some() {
             let profit = result.profit_calculation.as_ref().unwrap();
-            trace!("💰 Profit breakdown - ETH in: {}, ETH out: {}, Gas cost: {} ETH, Net: {} ETH",
-                  profit.eth_in.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-                  profit.eth_out.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-                  profit.gas_cost_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-                  profit.net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18);
+            trace!(
+                "💰 Profit breakdown - ETH in: {}, ETH out: {}, Gas cost: {} ETH, Net: {} ETH",
+                profit.eth_in.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
+                profit.eth_out.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
+                profit
+                    .gas_cost_wei
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0)
+                    / 1e18,
+                profit
+                    .net_profit_wei
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0)
+                    / 1e18
+            );
         }
     }
 
@@ -389,10 +434,12 @@ impl DirectMempoolExecutor {
         if let Some(ref nonce_manager) = self.nonce_manager {
             let current_nonce = *nonce_manager.current_nonce.read().await;
             let pending_count = nonce_manager.get_pending_count().await;
-            
-            debug!("🔢 Nonce Status - Current: {}, Pending: {}, Max pending: {}", 
-                  current_nonce, pending_count, self.max_pending_transactions);
-            
+
+            debug!(
+                "🔢 Nonce Status - Current: {}, Pending: {}, Max pending: {}",
+                current_nonce, pending_count, self.max_pending_transactions
+            );
+
             if pending_count > 5 {
                 warn!("⚠️ High number of pending transactions: {}", pending_count);
             }
@@ -408,7 +455,9 @@ impl DirectMempoolExecutor {
         input_data: Vec<u8>,
         value: Option<U256>,
     ) -> Result<TransactionExecutionResult> {
-        let private_key = self.private_key.as_ref()
+        let private_key = self
+            .private_key
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Private key required for direct mempool execution"))?;
 
         let signer = PrivateKeySigner::from_str(private_key)
@@ -427,14 +476,16 @@ impl DirectMempoolExecutor {
             let pending_count = nonce_manager.get_pending_count().await;
             if pending_count >= self.max_pending_transactions {
                 return Err(anyhow::anyhow!(
-                    "Too many pending transactions: {} >= {}", 
-                    pending_count, 
+                    "Too many pending transactions: {} >= {}",
+                    pending_count,
                     self.max_pending_transactions
                 ));
             }
 
             // Cleanup stale transactions
-            nonce_manager.cleanup_stale_transactions(&self.rpc_url).await?;
+            nonce_manager
+                .cleanup_stale_transactions(&self.rpc_url)
+                .await?;
 
             nonce_manager.get_next_nonce().await
         } else {
@@ -455,13 +506,7 @@ impl DirectMempoolExecutor {
              gas_limit: {:?}\n\
              base_fee: {:?}\n\
              priority_fee: {:?}",
-            contract_address,
-            from_address,
-            nonce,
-            gas_price,
-            gas_limit,
-            base_fee,
-            priority_fee
+            contract_address, from_address, nonce, gas_price, gas_limit, base_fee, priority_fee
         );
 
         let input_bytes = Bytes::from(input_data);
@@ -495,7 +540,10 @@ impl DirectMempoolExecutor {
             Ok(pending_tx) => {
                 let tx_hash = pending_tx.tx_hash();
                 let tx_hash_str = tx_hash.to_string();
-                info!("✅ Transaction sent to mempool: {} (nonce: {})", tx_hash_str, nonce);
+                info!(
+                    "✅ Transaction sent to mempool: {} (nonce: {})",
+                    tx_hash_str, nonce
+                );
 
                 // Track pending transaction if nonce manager is available
                 if let Some(ref nonce_manager) = self.nonce_manager {
@@ -512,15 +560,19 @@ impl DirectMempoolExecutor {
                 // Wait for confirmation with timeout
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(45),
-                    pending_tx.get_receipt()
-                ).await {
+                    pending_tx.get_receipt(),
+                )
+                .await
+                {
                     Ok(Ok(receipt)) => {
                         let confirmation_time = start_time.elapsed();
                         let gas_used = receipt.gas_used;
                         let effective_gas_price = receipt.effective_gas_price;
-                        
-                        info!("✅ Transaction confirmed: {} in {:?} (gas: {}, price: {})", 
-                             tx_hash_str, confirmation_time, gas_used, effective_gas_price);
+
+                        info!(
+                            "✅ Transaction confirmed: {} in {:?} (gas: {}, price: {})",
+                            tx_hash_str, confirmation_time, gas_used, effective_gas_price
+                        );
 
                         // Mark transaction as confirmed
                         if let Some(ref nonce_manager) = self.nonce_manager {
@@ -535,7 +587,10 @@ impl DirectMempoolExecutor {
                             success: true,
                             confirmation_time: Some(confirmation_time),
                             receipt: Some(receipt.clone()),
-                            profit_calculation: self.calculate_profit_from_receipt(&receipt).await.ok(),
+                            profit_calculation: self
+                                .calculate_profit_from_receipt(&receipt)
+                                .await
+                                .ok(),
                             error: None,
                         })
                     }
@@ -557,7 +612,10 @@ impl DirectMempoolExecutor {
                         })
                     }
                     Err(_) => {
-                        warn!("⏰ Transaction confirmation timeout: {} (will continue monitoring)", tx_hash_str);
+                        warn!(
+                            "⏰ Transaction confirmation timeout: {} (will continue monitoring)",
+                            tx_hash_str
+                        );
                         // Don't mark as confirmed - let cleanup handle it
                         Ok(TransactionExecutionResult {
                             tx_hash: tx_hash_str,
@@ -575,7 +633,10 @@ impl DirectMempoolExecutor {
             }
             Err(e) => {
                 error!("❌ Failed to send transaction: {:?}", e);
-                Err(anyhow::anyhow!("Failed to send transaction to mempool: {}", e))
+                Err(anyhow::anyhow!(
+                    "Failed to send transaction to mempool: {}",
+                    e
+                ))
             }
         }
     }
@@ -593,9 +654,9 @@ impl DirectMempoolExecutor {
     ) -> Result<Vec<u8>> {
         // For now, create a simple swap transaction calldata
         // This would need to be adapted for your specific MEV contract
-        
-        use alloy_sol_types::{SolCall, sol};
-        
+
+        use alloy_sol_types::{sol, SolCall};
+
         sol! {
             #[derive(Debug)]
             function swapExactTokensForTokens(
@@ -611,7 +672,8 @@ impl DirectMempoolExecutor {
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_secs() + 300
+                .as_secs()
+                + 300,
         ); // 5 minutes from now
 
         let path = vec![token_in, token_out];
@@ -623,7 +685,8 @@ impl DirectMempoolExecutor {
             path,
             to,
             deadline,
-        }.abi_encode();
+        }
+        .abi_encode();
 
         Ok(function_call)
     }
@@ -636,12 +699,15 @@ impl DirectMempoolExecutor {
         gas_price: u128,
     ) -> Result<Vec<TransactionExecutionResult>> {
         info!("🥪 Executing sandwich attack via direct mempool");
-        
+
         let mut results = Vec::new();
-        
+
         // Submit frontrun transaction first
         info!("📤 Submitting frontrun transaction...");
-        match self.send_raw_transaction(frontrun_tx, gas_price + 1_000_000_000).await {
+        match self
+            .send_raw_transaction(frontrun_tx, gas_price + 1_000_000_000)
+            .await
+        {
             Ok(result) => {
                 info!("✅ Frontrun submitted: {}", result.tx_hash);
                 results.push(result);
@@ -654,7 +720,7 @@ impl DirectMempoolExecutor {
 
         // Wait a brief moment, then submit backrun
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        
+
         info!("📤 Submitting backrun transaction...");
         match self.send_raw_transaction(backrun_tx, gas_price).await {
             Ok(result) => {
@@ -688,11 +754,15 @@ impl DirectMempoolExecutor {
             tx_req.max_priority_fee_per_gas,
             tx_req.input.into_input().unwrap_or_default().to_vec(),
             tx_req.value,
-        ).await
+        )
+        .await
     }
 
     /// Calculate profit from transaction receipt by analyzing swap events
-    async fn calculate_profit_from_receipt(&self, receipt: &TransactionReceipt) -> Result<ProfitCalculation> {
+    async fn calculate_profit_from_receipt(
+        &self,
+        receipt: &TransactionReceipt,
+    ) -> Result<ProfitCalculation> {
         let mut eth_in = U256::ZERO;
         let mut eth_out = U256::ZERO;
         let mut token_in = U256::ZERO;
@@ -706,19 +776,22 @@ impl DirectMempoolExecutor {
                 address: log.address(),
                 data: alloy_primitives::LogData::new(
                     log.topics().to_vec(),
-                    log.data().data.clone()
-                ).unwrap(),
+                    log.data().data.clone(),
+                )
+                .unwrap(),
             };
-            
+
             if let Ok(swap_event) = Swap::decode_log(&primitive_log, true) {
                 swap_events_parsed += 1;
-                
+
                 // Accumulate token flows
                 token_in += swap_event.amount0In + swap_event.amount1In;
                 token_out += swap_event.amount0Out + swap_event.amount1Out;
-                
-                debug!("🔍 Parsed swap event - In: {}, Out: {}", 
-                      token_in, token_out);
+
+                debug!(
+                    "🔍 Parsed swap event - In: {}, Out: {}",
+                    token_in, token_out
+                );
             }
         }
 
@@ -729,8 +802,7 @@ impl DirectMempoolExecutor {
             eth_out = token_out / U256::from(1000);
         }
 
-        let gas_cost_wei = U256::from(receipt.gas_used) * 
-                          U256::from(receipt.effective_gas_price);
+        let gas_cost_wei = U256::from(receipt.gas_used) * U256::from(receipt.effective_gas_price);
 
         let gross_profit_wei = if eth_out > eth_in {
             eth_out - eth_in
@@ -745,17 +817,20 @@ impl DirectMempoolExecutor {
         };
 
         let profit_percentage = if eth_in > U256::ZERO {
-            (net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 
-             eth_in.to_string().parse::<f64>().unwrap_or(1.0)) * 100.0
+            (net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0)
+                / eth_in.to_string().parse::<f64>().unwrap_or(1.0))
+                * 100.0
         } else {
             0.0
         };
 
-        info!("💰 Profit calculation - Gross: {} ETH, Gas: {} ETH, Net: {} ETH ({}%)",
-             gross_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-             gas_cost_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-             net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-             profit_percentage);
+        info!(
+            "💰 Profit calculation - Gross: {} ETH, Gas: {} ETH, Net: {} ETH ({}%)",
+            gross_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
+            gas_cost_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
+            net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
+            profit_percentage
+        );
 
         Ok(ProfitCalculation {
             eth_in,
@@ -787,12 +862,21 @@ impl DirectMempoolExecutor {
             strategy,
         };
 
-        info!("🥪 Starting tracked sandwich execution - strategy: {}", tracker.strategy);
+        info!(
+            "🥪 Starting tracked sandwich execution - strategy: {}",
+            tracker.strategy
+        );
 
         // Execute frontrun
-        match self.send_raw_transaction(frontrun_tx, gas_price + 1_000_000_000).await {
+        match self
+            .send_raw_transaction(frontrun_tx, gas_price + 1_000_000_000)
+            .await
+        {
             Ok(result) => {
-                info!("✅ Frontrun completed: {} (success: {})", result.tx_hash, result.success);
+                info!(
+                    "✅ Frontrun completed: {} (success: {})",
+                    result.tx_hash, result.success
+                );
                 tracker.frontrun_tx = Some(result);
             }
             Err(e) => {
@@ -806,11 +890,17 @@ impl DirectMempoolExecutor {
 
         match self.send_raw_transaction(backrun_tx, gas_price).await {
             Ok(result) => {
-                info!("✅ Backrun completed: {} (success: {})", result.tx_hash, result.success);
+                info!(
+                    "✅ Backrun completed: {} (success: {})",
+                    result.tx_hash, result.success
+                );
                 tracker.backrun_tx = Some(result);
             }
             Err(e) => {
-                warn!("⚠️ Backrun failed: {} - frontrun might still be profitable", e);
+                warn!(
+                    "⚠️ Backrun failed: {} - frontrun might still be profitable",
+                    e
+                );
             }
         }
 
@@ -821,16 +911,26 @@ impl DirectMempoolExecutor {
         info!("🏁 Sandwich execution completed in {:?}", execution_time);
 
         if let Some(ref profit) = tracker.total_profit {
-            info!("📊 Final profit: {} ETH ({}% return)", 
-                 profit.net_profit_wei.to_string().parse::<f64>().unwrap_or(0.0) / 1e18,
-                 profit.profit_percentage);
+            info!(
+                "📊 Final profit: {} ETH ({}% return)",
+                profit
+                    .net_profit_wei
+                    .to_string()
+                    .parse::<f64>()
+                    .unwrap_or(0.0)
+                    / 1e18,
+                profit.profit_percentage
+            );
         }
 
         Ok(tracker)
     }
 
     /// Calculate total profit from complete sandwich execution
-    async fn calculate_sandwich_profit(&self, tracker: &SandwichExecutionTracker) -> Result<ProfitCalculation> {
+    async fn calculate_sandwich_profit(
+        &self,
+        tracker: &SandwichExecutionTracker,
+    ) -> Result<ProfitCalculation> {
         let mut total_gas_cost = U256::ZERO;
         let mut total_eth_in = U256::ZERO;
         let mut total_eth_out = U256::ZERO;
@@ -867,8 +967,9 @@ impl DirectMempoolExecutor {
         };
 
         let profit_percentage = if total_eth_in > U256::ZERO {
-            (net_profit.to_string().parse::<f64>().unwrap_or(0.0) / 
-             total_eth_in.to_string().parse::<f64>().unwrap_or(1.0)) * 100.0
+            (net_profit.to_string().parse::<f64>().unwrap_or(0.0)
+                / total_eth_in.to_string().parse::<f64>().unwrap_or(1.0))
+                * 100.0
         } else {
             0.0
         };

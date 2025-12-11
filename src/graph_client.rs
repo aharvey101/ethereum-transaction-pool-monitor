@@ -1,7 +1,7 @@
+use crate::pool_db::{DexPool, PoolDatabase};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use crate::pool_db::{DexPool, PoolDatabase};
 
 /// The Graph API client for querying Uniswap subgraphs
 pub struct GraphClient {
@@ -135,10 +135,10 @@ impl GraphClient {
             "https://gateway.thegraph.com/api/{}/subgraphs/id/A3Np3RQbaBA6oKJgiwDJeo5T3zrYfGHPWFYayMwtNDum",
             self.api_key
         );
-        
+
         println!("🔍 Fetching UniswapV2 pairs from The Graph Network...");
         println!("🔗 Using correct V2 subgraph: A3Np3RQbaBA6oKJgiwDJeo5T3zrYfGHPWFYayMwtNDum");
-        
+
         // Check if we're resuming or starting fresh
         let (mut total_pairs, mut last_id) = match pool_db.get_latest_pool_id("UniswapV2")? {
             Some(latest_id) => {
@@ -154,15 +154,16 @@ impl GraphClient {
         };
 
         // No artificial completion check - collect all pools
-        
+
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pairs(first: {}) {{
                             id
@@ -170,9 +171,12 @@ impl GraphClient {
                             token1 {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pairs(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -180,30 +184,46 @@ impl GraphClient {
                             token1 {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
+
             // Retry logic for batch-level errors
             let mut batch_retry_count = 0;
             const MAX_BATCH_RETRIES: u32 = 3;
-            
+
             let pairs = loop {
-                match self.execute_query_internal::<V2PairsResponse>(&endpoint, &query).await {
+                match self
+                    .execute_query_internal::<V2PairsResponse>(&endpoint, &query)
+                    .await
+                {
                     Ok(response) => break response.pairs,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
-                            println!("❌ Batch {} failed after {} retries: {}", batch_count, MAX_BATCH_RETRIES, e);
+                            println!(
+                                "❌ Batch {} failed after {} retries: {}",
+                                batch_count, MAX_BATCH_RETRIES, e
+                            );
                             println!("⏭️  Skipping this batch and continuing...");
                             break Vec::new(); // Return empty to skip this batch
                         }
-                        println!("⚠️  Batch {} error (attempt {}): {}, retrying in {}s...", 
-                                 batch_count, batch_retry_count, e, batch_retry_count * 3);
-                        tokio::time::sleep(tokio::time::Duration::from_secs((batch_retry_count * 3) as u64)).await;
+                        println!(
+                            "⚠️  Batch {} error (attempt {}): {}, retrying in {}s...",
+                            batch_count,
+                            batch_retry_count,
+                            e,
+                            batch_retry_count * 3
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            (batch_retry_count * 3) as u64,
+                        ))
+                        .await;
                     }
                 }
             };
-            
+
             if pairs.is_empty() {
                 if batch_retry_count >= MAX_BATCH_RETRIES {
                     println!("⏭️  Continuing to next batch after skipping failed batch...");
@@ -213,7 +233,7 @@ impl GraphClient {
                     break;
                 }
             }
-            
+
             // Convert to DexPool and write to database immediately
             let mut pools = Vec::new();
             for pair in &pairs {
@@ -221,15 +241,19 @@ impl GraphClient {
                     pools.push(pool);
                 }
             }
-            
+
             // Write batch to database with retry logic
             let mut db_retry_count = 0;
             loop {
                 match pool_db.add_pools(&pools) {
                     Ok(_) => {
                         total_pairs += pools.len() as u32;
-                        println!("📊 Batch {}: Retrieved {} V2 pairs, wrote to DB (Total: {})", 
-                                 batch_count, pairs.len(), total_pairs);
+                        println!(
+                            "📊 Batch {}: Retrieved {} V2 pairs, wrote to DB (Total: {})",
+                            batch_count,
+                            pairs.len(),
+                            total_pairs
+                        );
                         break;
                     }
                     Err(e) => {
@@ -238,21 +262,24 @@ impl GraphClient {
                             println!("❌ Database write failed after 3 retries: {}", e);
                             return Err(e.into());
                         }
-                        println!("⚠️  Database write error (attempt {}): {}, retrying...", db_retry_count, e);
+                        println!(
+                            "⚠️  Database write error (attempt {}): {}, retrying...",
+                            db_retry_count, e
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     }
                 }
             }
-            
+
             if let Some(last_pair) = pairs.last() {
                 last_id = last_pair.id.clone();
             }
-            
+
             // Rate limiting delay
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(total_pairs)
     }
 
@@ -263,10 +290,10 @@ impl GraphClient {
             "https://gateway.thegraph.com/api/{}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
             self.api_key
         );
-        
+
         println!("🔍 Fetching UniswapV3 pools from The Graph Network...");
         println!("🔗 Using correct V3 subgraph: 5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV");
-        
+
         // Check if we're resuming or starting fresh
         let (mut total_pools, mut last_id) = match pool_db.get_latest_pool_id("UniswapV3")? {
             Some(latest_id) => {
@@ -282,15 +309,16 @@ impl GraphClient {
         };
 
         // No artificial completion check - collect all pools
-        
+
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pools(first: {}) {{
                             id
@@ -299,9 +327,12 @@ impl GraphClient {
                             feeTier
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -310,30 +341,46 @@ impl GraphClient {
                             feeTier
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
+
             // Retry logic for batch-level errors
             let mut batch_retry_count = 0;
             const MAX_BATCH_RETRIES: u32 = 3;
-            
+
             let pools_data = loop {
-                match self.execute_query_internal::<V3PoolsResponse>(&endpoint, &query).await {
+                match self
+                    .execute_query_internal::<V3PoolsResponse>(&endpoint, &query)
+                    .await
+                {
                     Ok(response) => break response.pools,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
-                            println!("❌ Batch {} failed after {} retries: {}", batch_count, MAX_BATCH_RETRIES, e);
+                            println!(
+                                "❌ Batch {} failed after {} retries: {}",
+                                batch_count, MAX_BATCH_RETRIES, e
+                            );
                             println!("⏭️  Skipping this batch and continuing...");
                             break Vec::new(); // Return empty to skip this batch
                         }
-                        println!("⚠️  Batch {} error (attempt {}): {}, retrying in {}s...", 
-                                 batch_count, batch_retry_count, e, batch_retry_count * 3);
-                        tokio::time::sleep(tokio::time::Duration::from_secs((batch_retry_count * 3) as u64)).await;
+                        println!(
+                            "⚠️  Batch {} error (attempt {}): {}, retrying in {}s...",
+                            batch_count,
+                            batch_retry_count,
+                            e,
+                            batch_retry_count * 3
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            (batch_retry_count * 3) as u64,
+                        ))
+                        .await;
                     }
                 }
             };
-            
+
             if pools_data.is_empty() {
                 if batch_retry_count >= MAX_BATCH_RETRIES {
                     println!("⏭️  Continuing to next batch after skipping failed batch...");
@@ -343,7 +390,7 @@ impl GraphClient {
                     break;
                 }
             }
-            
+
             // Convert to DexPool and write to database immediately
             let mut pools = Vec::new();
             for pool in &pools_data {
@@ -351,15 +398,19 @@ impl GraphClient {
                     pools.push(pool);
                 }
             }
-            
+
             // Write batch to database with retry logic
             let mut db_retry_count = 0;
             loop {
                 match pool_db.add_pools(&pools) {
                     Ok(_) => {
                         total_pools += pools.len() as u32;
-                        println!("📊 Batch {}: Retrieved {} V3 pools, wrote to DB (Total: {})", 
-                                 batch_count, pools_data.len(), total_pools);
+                        println!(
+                            "📊 Batch {}: Retrieved {} V3 pools, wrote to DB (Total: {})",
+                            batch_count,
+                            pools_data.len(),
+                            total_pools
+                        );
                         break;
                     }
                     Err(e) => {
@@ -368,39 +419,49 @@ impl GraphClient {
                             println!("❌ Database write failed after 3 retries: {}", e);
                             return Err(e.into());
                         }
-                        println!("⚠️  Database write error (attempt {}): {}, retrying...", db_retry_count, e);
+                        println!(
+                            "⚠️  Database write error (attempt {}): {}, retrying...",
+                            db_retry_count, e
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     }
                 }
             }
-            
+
             if let Some(last_pool) = pools_data.last() {
                 last_id = last_pool.id.clone();
             }
-            
+
             // Rate limiting delay
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(total_pools)
     }
 
     /// Fetch all SushiSwap pairs from The Graph with progressive database writes (resumable)
-    pub async fn fetch_all_sushi_pairs_with_db(&mut self, pool_db: &PoolDatabase, subgraph_id: &str) -> Result<u32> {
+    pub async fn fetch_all_sushi_pairs_with_db(
+        &mut self,
+        pool_db: &PoolDatabase,
+        subgraph_id: &str,
+    ) -> Result<u32> {
         let endpoint = format!(
             "https://gateway.thegraph.com/api/{}/subgraphs/id/{}",
             self.api_key, subgraph_id
         );
-        
+
         println!("🔍 Fetching SushiSwap pairs from The Graph Network...");
         println!("🔗 Using SushiSwap subgraph: {}", subgraph_id);
-        
+
         // Check if we're resuming or starting fresh
         let (mut total_pairs, mut last_id) = match pool_db.get_latest_pool_id("SushiSwap")? {
             Some(latest_id) => {
                 let existing_count = pool_db.get_pool_count_by_protocol("SushiSwap")?;
-                println!("📊 Resuming SushiSwap collection from pool ID: {}", latest_id);
+                println!(
+                    "📊 Resuming SushiSwap collection from pool ID: {}",
+                    latest_id
+                );
                 println!("📊 Already collected: {} SushiSwap pairs", existing_count);
                 (existing_count, latest_id)
             }
@@ -411,15 +472,16 @@ impl GraphClient {
         };
 
         // No artificial completion check - collect all pools
-        
+
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         liquidityPools(first: {}) {{
                             id
@@ -427,9 +489,12 @@ impl GraphClient {
                             inputTokens {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         liquidityPools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -437,30 +502,46 @@ impl GraphClient {
                             inputTokens {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
+
             // Retry logic for batch-level errors
             let mut batch_retry_count = 0;
             const MAX_BATCH_RETRIES: u32 = 3;
-            
+
             let pairs = loop {
-                match self.execute_query_internal::<SushiPairsResponse>(&endpoint, &query).await {
+                match self
+                    .execute_query_internal::<SushiPairsResponse>(&endpoint, &query)
+                    .await
+                {
                     Ok(response) => break response.liquidity_pools,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
-                            println!("❌ Batch {} failed after {} retries: {}", batch_count, MAX_BATCH_RETRIES, e);
+                            println!(
+                                "❌ Batch {} failed after {} retries: {}",
+                                batch_count, MAX_BATCH_RETRIES, e
+                            );
                             println!("⏭️  Skipping this batch and continuing...");
                             break Vec::new();
                         }
-                        println!("⚠️  Batch {} error (attempt {}): {}, retrying in {}s...", 
-                                 batch_count, batch_retry_count, e, batch_retry_count * 3);
-                        tokio::time::sleep(tokio::time::Duration::from_secs((batch_retry_count * 3) as u64)).await;
+                        println!(
+                            "⚠️  Batch {} error (attempt {}): {}, retrying in {}s...",
+                            batch_count,
+                            batch_retry_count,
+                            e,
+                            batch_retry_count * 3
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            (batch_retry_count * 3) as u64,
+                        ))
+                        .await;
                     }
                 }
             };
-            
+
             if pairs.is_empty() {
                 if batch_retry_count >= MAX_BATCH_RETRIES {
                     println!("⏭️  Continuing to next batch after skipping failed batch...");
@@ -470,7 +551,7 @@ impl GraphClient {
                     break;
                 }
             }
-            
+
             // Convert to DexPool and write to database immediately
             let mut pools = Vec::new();
             for pair in &pairs {
@@ -478,15 +559,19 @@ impl GraphClient {
                     pools.push(pool);
                 }
             }
-            
+
             // Write batch to database with retry logic
             let mut db_retry_count = 0;
             loop {
                 match pool_db.add_pools(&pools) {
                     Ok(_) => {
                         total_pairs += pools.len() as u32;
-                        println!("📊 Batch {}: Retrieved {} SushiSwap pairs, wrote to DB (Total: {})", 
-                                 batch_count, pairs.len(), total_pairs);
+                        println!(
+                            "📊 Batch {}: Retrieved {} SushiSwap pairs, wrote to DB (Total: {})",
+                            batch_count,
+                            pairs.len(),
+                            total_pairs
+                        );
                         break;
                     }
                     Err(e) => {
@@ -495,34 +580,41 @@ impl GraphClient {
                             println!("❌ Database write failed after 3 retries: {}", e);
                             return Err(e.into());
                         }
-                        println!("⚠️  Database write error (attempt {}): {}, retrying...", db_retry_count, e);
+                        println!(
+                            "⚠️  Database write error (attempt {}): {}, retrying...",
+                            db_retry_count, e
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     }
                 }
             }
-            
+
             if let Some(last_pair) = pairs.last() {
                 last_id = last_pair.id.clone();
             }
-            
+
             // Rate limiting delay
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(total_pairs)
     }
 
     /// Fetch all Curve pools from The Graph with progressive database writes (resumable)
-    pub async fn fetch_all_curve_pools_with_db(&mut self, pool_db: &PoolDatabase, subgraph_id: &str) -> Result<u32> {
+    pub async fn fetch_all_curve_pools_with_db(
+        &mut self,
+        pool_db: &PoolDatabase,
+        subgraph_id: &str,
+    ) -> Result<u32> {
         let endpoint = format!(
             "https://gateway.thegraph.com/api/{}/subgraphs/id/{}",
             self.api_key, subgraph_id
         );
-        
+
         println!("🔍 Fetching Curve pools from The Graph Network...");
         println!("🔗 Using Curve subgraph: {}", subgraph_id);
-        
+
         // Check if we're resuming or starting fresh
         let (mut total_pools, mut last_id) = match pool_db.get_latest_pool_id("Curve")? {
             Some(latest_id) => {
@@ -538,15 +630,16 @@ impl GraphClient {
         };
 
         // No artificial completion check - collect all pools
-        
+
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         liquidityPools(first: {}) {{
                             id
@@ -555,9 +648,12 @@ impl GraphClient {
                             name
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         liquidityPools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -566,30 +662,46 @@ impl GraphClient {
                             name
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
+
             // Retry logic for batch-level errors
             let mut batch_retry_count = 0;
             const MAX_BATCH_RETRIES: u32 = 3;
-            
+
             let pools_data = loop {
-                match self.execute_query_internal::<CurvePoolsResponse>(&endpoint, &query).await {
+                match self
+                    .execute_query_internal::<CurvePoolsResponse>(&endpoint, &query)
+                    .await
+                {
                     Ok(response) => break response.liquidity_pools,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
-                            println!("❌ Batch {} failed after {} retries: {}", batch_count, MAX_BATCH_RETRIES, e);
+                            println!(
+                                "❌ Batch {} failed after {} retries: {}",
+                                batch_count, MAX_BATCH_RETRIES, e
+                            );
                             println!("⏭️  Skipping this batch and continuing...");
                             break Vec::new();
                         }
-                        println!("⚠️  Batch {} error (attempt {}): {}, retrying in {}s...", 
-                                 batch_count, batch_retry_count, e, batch_retry_count * 3);
-                        tokio::time::sleep(tokio::time::Duration::from_secs((batch_retry_count * 3) as u64)).await;
+                        println!(
+                            "⚠️  Batch {} error (attempt {}): {}, retrying in {}s...",
+                            batch_count,
+                            batch_retry_count,
+                            e,
+                            batch_retry_count * 3
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            (batch_retry_count * 3) as u64,
+                        ))
+                        .await;
                     }
                 }
             };
-            
+
             if pools_data.is_empty() {
                 if batch_retry_count >= MAX_BATCH_RETRIES {
                     println!("⏭️  Continuing to next batch after skipping failed batch...");
@@ -599,7 +711,7 @@ impl GraphClient {
                     break;
                 }
             }
-            
+
             // Convert to DexPool and write to database immediately
             let mut pools = Vec::new();
             for pool in &pools_data {
@@ -607,15 +719,19 @@ impl GraphClient {
                     pools.push(pool);
                 }
             }
-            
+
             // Write batch to database with retry logic
             let mut db_retry_count = 0;
             loop {
                 match pool_db.add_pools(&pools) {
                     Ok(_) => {
                         total_pools += pools.len() as u32;
-                        println!("📊 Batch {}: Retrieved {} Curve pools, wrote to DB (Total: {})", 
-                                 batch_count, pools_data.len(), total_pools);
+                        println!(
+                            "📊 Batch {}: Retrieved {} Curve pools, wrote to DB (Total: {})",
+                            batch_count,
+                            pools_data.len(),
+                            total_pools
+                        );
                         break;
                     }
                     Err(e) => {
@@ -624,21 +740,24 @@ impl GraphClient {
                             println!("❌ Database write failed after 3 retries: {}", e);
                             return Err(e.into());
                         }
-                        println!("⚠️  Database write error (attempt {}): {}, retrying...", db_retry_count, e);
+                        println!(
+                            "⚠️  Database write error (attempt {}): {}, retrying...",
+                            db_retry_count, e
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     }
                 }
             }
-            
+
             if let Some(last_pool) = pools_data.last() {
                 last_id = last_pool.id.clone();
             }
-            
+
             // Rate limiting delay
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(total_pools)
     }
 
@@ -649,10 +768,10 @@ impl GraphClient {
             "https://gateway.thegraph.com/api/{}/subgraphs/id/DiYPVdygkfjDWhbxGSqAQxwBKmfKnkWQojqeM2rkLb3G",
             self.api_key
         );
-        
+
         println!("🔍 Fetching UniswapV4 pools from The Graph Network...");
         println!("🔗 Using V4 subgraph: DiYPVdygkfjDWhbxGSqAQxwBKmfKnkWQojqeM2rkLb3G");
-        
+
         // Check if we're resuming or starting fresh
         let (mut total_pools, mut last_id) = match pool_db.get_latest_pool_id("UniswapV4")? {
             Some(latest_id) => {
@@ -668,15 +787,16 @@ impl GraphClient {
         };
 
         // No artificial completion check - collect all pools
-        
+
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pools(first: {}) {{
                             id
@@ -684,9 +804,12 @@ impl GraphClient {
                             token1 {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -694,30 +817,46 @@ impl GraphClient {
                             token1 {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
+
             // Retry logic for batch-level errors
             let mut batch_retry_count = 0;
             const MAX_BATCH_RETRIES: u32 = 3;
-            
+
             let pools_data = loop {
-                match self.execute_query_internal::<V4PoolsResponse>(&endpoint, &query).await {
+                match self
+                    .execute_query_internal::<V4PoolsResponse>(&endpoint, &query)
+                    .await
+                {
                     Ok(response) => break response.pools,
                     Err(e) => {
                         batch_retry_count += 1;
                         if batch_retry_count >= MAX_BATCH_RETRIES {
-                            println!("❌ Batch {} failed after {} retries: {}", batch_count, MAX_BATCH_RETRIES, e);
+                            println!(
+                                "❌ Batch {} failed after {} retries: {}",
+                                batch_count, MAX_BATCH_RETRIES, e
+                            );
                             println!("⏭️  Skipping this batch and continuing...");
                             break Vec::new();
                         }
-                        println!("⚠️  Batch {} error (attempt {}): {}, retrying in {}s...", 
-                                 batch_count, batch_retry_count, e, batch_retry_count * 3);
-                        tokio::time::sleep(tokio::time::Duration::from_secs((batch_retry_count * 3) as u64)).await;
+                        println!(
+                            "⚠️  Batch {} error (attempt {}): {}, retrying in {}s...",
+                            batch_count,
+                            batch_retry_count,
+                            e,
+                            batch_retry_count * 3
+                        );
+                        tokio::time::sleep(tokio::time::Duration::from_secs(
+                            (batch_retry_count * 3) as u64,
+                        ))
+                        .await;
                     }
                 }
             };
-            
+
             if pools_data.is_empty() {
                 if batch_retry_count >= MAX_BATCH_RETRIES {
                     println!("⏭️  Continuing to next batch after skipping failed batch...");
@@ -727,7 +866,7 @@ impl GraphClient {
                     break;
                 }
             }
-            
+
             // Convert to DexPool and write to database immediately
             let mut pools = Vec::new();
             for pool in &pools_data {
@@ -735,15 +874,19 @@ impl GraphClient {
                     pools.push(pool);
                 }
             }
-            
+
             // Write batch to database with retry logic
             let mut db_retry_count = 0;
             loop {
                 match pool_db.add_pools(&pools) {
                     Ok(_) => {
                         total_pools += pools.len() as u32;
-                        println!("📊 Batch {}: Retrieved {} V4 pools, wrote to DB (Total: {})", 
-                                 batch_count, pools_data.len(), total_pools);
+                        println!(
+                            "📊 Batch {}: Retrieved {} V4 pools, wrote to DB (Total: {})",
+                            batch_count,
+                            pools_data.len(),
+                            total_pools
+                        );
                         break;
                     }
                     Err(e) => {
@@ -752,37 +895,40 @@ impl GraphClient {
                             println!("❌ Database write failed after 3 retries: {}", e);
                             return Err(e.into());
                         }
-                        println!("⚠️  Database write error (attempt {}): {}, retrying...", db_retry_count, e);
+                        println!(
+                            "⚠️  Database write error (attempt {}): {}, retrying...",
+                            db_retry_count, e
+                        );
                         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                     }
                 }
             }
-            
+
             if let Some(last_pool) = pools_data.last() {
                 last_id = last_pool.id.clone();
             }
-            
+
             // Rate limiting delay
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(total_pools)
     }
 
     #[allow(dead_code)]
     async fn try_fetch_v2_from_endpoint(&mut self, endpoint: &str) -> Result<Vec<GraphV2Pair>> {
-        
         let mut all_pairs = Vec::new();
         let mut last_id = String::new();
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pairs(first: {}) {{
                             id
@@ -790,9 +936,12 @@ impl GraphClient {
                             token1 {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pairs(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -800,30 +949,38 @@ impl GraphClient {
                             token1 {{ id symbol name }}
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
-            let response = self.execute_query_internal::<V2PairsResponse>(&endpoint, &query).await?;
+
+            let response = self
+                .execute_query_internal::<V2PairsResponse>(&endpoint, &query)
+                .await?;
             let pairs = response.pairs;
-            
-            println!("📊 Batch {}: Retrieved {} V2 pairs (Total: {})", 
-                     batch_count, pairs.len(), all_pairs.len() + pairs.len());
-            
+
+            println!(
+                "📊 Batch {}: Retrieved {} V2 pairs (Total: {})",
+                batch_count,
+                pairs.len(),
+                all_pairs.len() + pairs.len()
+            );
+
             if pairs.is_empty() {
                 break;
             }
-            
+
             if let Some(last_pair) = pairs.last() {
                 last_id = last_pair.id.clone();
             }
-            
+
             all_pairs.extend(pairs);
-            
+
             // Longer delay to avoid rate limiting - The Graph has strict limits
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(all_pairs)
     }
 
@@ -834,25 +991,25 @@ impl GraphClient {
             "https://gateway.thegraph.com/api/{}/subgraphs/id/5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
             self.api_key
         );
-        
+
         println!("🔍 Fetching UniswapV3 pools from The Graph Network...");
         println!("🔗 Using correct V3 subgraph: 5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV");
-        
+
         self.try_fetch_v3_from_endpoint(&endpoint).await
     }
 
     async fn try_fetch_v3_from_endpoint(&mut self, endpoint: &str) -> Result<Vec<GraphV3Pool>> {
-        
         let mut all_pools = Vec::new();
         let mut last_id = String::new();
         let mut batch_count = 0;
         const BATCH_SIZE: usize = 1000;
-        
+
         loop {
             batch_count += 1;
-            
+
             let query = if last_id.is_empty() {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pools(first: {}) {{
                             id
@@ -861,9 +1018,12 @@ impl GraphClient {
                             feeTier
                         }}
                     }}
-                "#, BATCH_SIZE)
+                "#,
+                    BATCH_SIZE
+                )
             } else {
-                format!(r#"
+                format!(
+                    r#"
                     query {{
                         pools(first: {}, where: {{id_gt: "{}"}}) {{
                             id
@@ -872,30 +1032,38 @@ impl GraphClient {
                             feeTier
                         }}
                     }}
-                "#, BATCH_SIZE, last_id)
+                "#,
+                    BATCH_SIZE, last_id
+                )
             };
-            
-            let response = self.execute_query_internal::<V3PoolsResponse>(&endpoint, &query).await?;
+
+            let response = self
+                .execute_query_internal::<V3PoolsResponse>(&endpoint, &query)
+                .await?;
             let pools = response.pools;
-            
-            println!("📊 Batch {}: Retrieved {} V3 pools (Total: {})", 
-                     batch_count, pools.len(), all_pools.len() + pools.len());
-            
+
+            println!(
+                "📊 Batch {}: Retrieved {} V3 pools (Total: {})",
+                batch_count,
+                pools.len(),
+                all_pools.len() + pools.len()
+            );
+
             if pools.is_empty() {
                 break;
             }
-            
+
             if let Some(last_pool) = pools.last() {
                 last_id = last_pool.id.clone();
             }
-            
+
             all_pools.extend(pools);
-            
+
             // Longer delay to avoid rate limiting - The Graph has strict limits
             println!("⏳ Waiting 2s to respect rate limits...");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        
+
         Ok(all_pools)
     }
 
@@ -914,12 +1082,13 @@ impl GraphClient {
     {
         const MAX_RETRIES: u32 = 5;
         let mut attempt = 0;
-        
+
         loop {
             attempt += 1;
             let body = json!({ "query": query });
-            
-            let response = self.client
+
+            let response = self
+                .client
                 .post(url)
                 .header("Content-Type", "application/json")
                 .header("User-Agent", "ethereum-pool-monitor/1.0")
@@ -931,21 +1100,30 @@ impl GraphClient {
             match response {
                 Ok(resp) => {
                     self.query_count += 1;
-                    
+
                     if resp.status().is_success() {
                         match resp.json::<GraphResponse<T>>().await {
                             Ok(graph_response) => {
                                 if let Some(errors) = graph_response.errors {
-                                    let error_messages: Vec<String> = errors.iter().map(|e| e.message.clone()).collect();
-                                    return Err(anyhow::anyhow!("GraphQL errors: {}", error_messages.join(", ")));
+                                    let error_messages: Vec<String> =
+                                        errors.iter().map(|e| e.message.clone()).collect();
+                                    return Err(anyhow::anyhow!(
+                                        "GraphQL errors: {}",
+                                        error_messages.join(", ")
+                                    ));
                                 }
-                                
-                                return graph_response.data
+
+                                return graph_response
+                                    .data
                                     .ok_or_else(|| anyhow::anyhow!("No data in GraphQL response"));
                             }
                             Err(e) => {
                                 if attempt >= MAX_RETRIES {
-                                    return Err(anyhow::anyhow!("JSON parse error after {} attempts: {}", MAX_RETRIES, e));
+                                    return Err(anyhow::anyhow!(
+                                        "JSON parse error after {} attempts: {}",
+                                        MAX_RETRIES,
+                                        e
+                                    ));
                                 }
                                 println!("⚠️  JSON parse error (attempt {}), retrying...", attempt);
                             }
@@ -954,31 +1132,53 @@ impl GraphClient {
                         // Handle specific HTTP error codes with longer delays for rate limiting
                         let status = resp.status();
                         if attempt >= MAX_RETRIES {
-                            return Err(anyhow::anyhow!("HTTP error {} after {} attempts", status, MAX_RETRIES));
+                            return Err(anyhow::anyhow!(
+                                "HTTP error {} after {} attempts",
+                                status,
+                                MAX_RETRIES
+                            ));
                         }
-                        
+
                         let delay = match status.as_u16() {
                             429 | 503 => {
                                 // Rate limiting or service unavailable - longer delays
-                                println!("⚠️  Rate limited (HTTP {}) - attempt {}, waiting {}s...", status, attempt, attempt * 5);
+                                println!(
+                                    "⚠️  Rate limited (HTTP {}) - attempt {}, waiting {}s...",
+                                    status,
+                                    attempt,
+                                    attempt * 5
+                                );
                                 attempt * 5 // 5s, 10s, 15s, 20s, 25s
                             }
                             _ => {
-                                println!("⚠️  HTTP error {} (attempt {}), retrying in {}s...", status, attempt, attempt);
+                                println!(
+                                    "⚠️  HTTP error {} (attempt {}), retrying in {}s...",
+                                    status, attempt, attempt
+                                );
                                 attempt // Normal backoff
                             }
                         };
-                        
+
                         tokio::time::sleep(tokio::time::Duration::from_secs(delay as u64)).await;
                     }
                 }
                 Err(e) => {
                     if attempt >= MAX_RETRIES {
-                        return Err(anyhow::anyhow!("Request failed after {} attempts: {}", MAX_RETRIES, e));
+                        return Err(anyhow::anyhow!(
+                            "Request failed after {} attempts: {}",
+                            MAX_RETRIES,
+                            e
+                        ));
                     }
-                    
-                    println!("⚠️  Request failed (attempt {}): {}, retrying in {}s...", attempt, e, attempt * 2);
-                    tokio::time::sleep(tokio::time::Duration::from_secs((attempt * 2) as u64)).await;
+
+                    println!(
+                        "⚠️  Request failed (attempt {}): {}, retrying in {}s...",
+                        attempt,
+                        e,
+                        attempt * 2
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs((attempt * 2) as u64))
+                        .await;
                 }
             }
         }
@@ -1022,7 +1222,7 @@ impl GraphClient {
         // Extract token addresses from inputTokens array (should have 2 tokens for pairs)
         let token0 = pair.input_tokens.get(0).map(|t| t.id.clone());
         let token1 = pair.input_tokens.get(1).map(|t| t.id.clone());
-        
+
         Ok(DexPool {
             address: pair.id.clone(),
             protocol: "SushiSwap".to_string(),
@@ -1036,7 +1236,10 @@ impl GraphClient {
     pub fn graph_curve_pool_to_dex_pool(pool: &GraphCurvePool) -> Result<DexPool> {
         // Curve pools can have multiple tokens, we'll use the first two if available
         let (token0, token1) = if pool.input_tokens.len() >= 2 {
-            (Some(pool.input_tokens[0].id.clone()), Some(pool.input_tokens[1].id.clone()))
+            (
+                Some(pool.input_tokens[0].id.clone()),
+                Some(pool.input_tokens[1].id.clone()),
+            )
         } else if pool.input_tokens.len() == 1 {
             (Some(pool.input_tokens[0].id.clone()), None)
         } else {
@@ -1053,46 +1256,58 @@ impl GraphClient {
     }
 
     /// Populate database with pools from all supported DEXs (requires subgraph IDs for SushiSwap/Curve)
-    pub async fn populate_database_comprehensive(&mut self, pool_db: &PoolDatabase, sushiswap_subgraph_id: Option<&str>, curve_subgraph_id: Option<&str>) -> Result<(u32, u32, u32, u32, u32)> {
+    pub async fn populate_database_comprehensive(
+        &mut self,
+        pool_db: &PoolDatabase,
+        sushiswap_subgraph_id: Option<&str>,
+        curve_subgraph_id: Option<&str>,
+    ) -> Result<(u32, u32, u32, u32, u32)> {
         println!("🚀 Starting comprehensive DEX pool data collection from The Graph...");
         println!("📊 Free tier limit: 100,000 queries/month");
         println!("🔄 Resumable collection - will continue from where it left off");
         println!();
-        
+
         // Fetch V2 pairs
         println!("📥 Collecting UniswapV2 pairs...");
         let v2_count = self.fetch_all_v2_pairs_with_db(pool_db).await?;
         println!("✅ V2 collection status: {} pairs in database", v2_count);
         println!();
-        
+
         // Fetch V3 pools
         println!("📥 Collecting UniswapV3 pools...");
         let v3_count = self.fetch_all_v3_pools_with_db(pool_db).await?;
         println!("✅ V3 collection status: {} pools in database", v3_count);
         println!();
-        
+
         // Fetch V4 pools
         println!("📥 Collecting UniswapV4 pools...");
         let v4_count = self.fetch_all_v4_pools_with_db(pool_db).await?;
         println!("✅ V4 collection status: {} pools in database", v4_count);
         println!();
-        
+
         // Fetch SushiSwap pairs if subgraph ID provided
         let sushi_count = if let Some(subgraph_id) = sushiswap_subgraph_id {
             println!("📥 Collecting SushiSwap pairs...");
-            let count = self.fetch_all_sushi_pairs_with_db(pool_db, subgraph_id).await?;
-            println!("✅ SushiSwap collection status: {} pairs in database", count);
+            let count = self
+                .fetch_all_sushi_pairs_with_db(pool_db, subgraph_id)
+                .await?;
+            println!(
+                "✅ SushiSwap collection status: {} pairs in database",
+                count
+            );
             println!();
             count
         } else {
             println!("⚠️  SushiSwap subgraph ID not provided - skipping");
             pool_db.get_pool_count_by_protocol("SushiSwap").unwrap_or(0)
         };
-        
+
         // Fetch Curve pools if subgraph ID provided
         let curve_count = if let Some(subgraph_id) = curve_subgraph_id {
             println!("📥 Collecting Curve pools...");
-            let count = self.fetch_all_curve_pools_with_db(pool_db, subgraph_id).await?;
+            let count = self
+                .fetch_all_curve_pools_with_db(pool_db, subgraph_id)
+                .await?;
             println!("✅ Curve collection status: {} pools in database", count);
             println!();
             count
@@ -1100,64 +1315,75 @@ impl GraphClient {
             println!("⚠️  Curve subgraph ID not provided - skipping");
             pool_db.get_pool_count_by_protocol("Curve").unwrap_or(0)
         };
-        
+
         let total_queries = self.query_count();
-        println!("📈 Query usage this session: {}/{} queries ({:.1}% of free tier)", 
-                 total_queries, 100_000, (total_queries as f32 / 100_000.0) * 100.0);
-        
+        println!(
+            "📈 Query usage this session: {}/{} queries ({:.1}% of free tier)",
+            total_queries,
+            100_000,
+            (total_queries as f32 / 100_000.0) * 100.0
+        );
+
         if total_queries > 100_000 {
             println!("⚠️  Warning: Exceeded free tier query limit in this session!");
         } else {
             println!("✅ Well within free tier limits!");
         }
-        
+
         let total_pools = v2_count + v3_count + v4_count + sushi_count + curve_count;
         println!("🎉 Database collection status: {} V2 + {} V3 + {} V4 + {} Sushi + {} Curve = {} total pools", 
                  v2_count, v3_count, v4_count, sushi_count, curve_count, total_pools);
-        
+
         Ok((v2_count, v3_count, v4_count, sushi_count, curve_count))
     }
 
     /// Populate database with pools from The Graph (optimized with progressive writes and resumable)
-    pub async fn populate_database_from_graph_optimized(&mut self, pool_db: &PoolDatabase) -> Result<(u32, u32, u32)> {
+    pub async fn populate_database_from_graph_optimized(
+        &mut self,
+        pool_db: &PoolDatabase,
+    ) -> Result<(u32, u32, u32)> {
         println!("🚀 Starting comprehensive pool data collection from The Graph...");
         println!("📊 Free tier limit: 100,000 queries/month");
         println!("🔄 Resumable collection - will continue from where it left off");
         println!();
-        
+
         // NO clear_pools() call - we want to resume from existing data
-        
+
         // Fetch V2 pairs with progressive database writes (resumable)
         println!("📥 Collecting V2 pairs with progressive database writes (resumable)...");
         let v2_count = self.fetch_all_v2_pairs_with_db(pool_db).await?;
         println!("✅ V2 collection status: {} pairs in database", v2_count);
         println!();
-        
+
         // Fetch V3 pools with progressive database writes (resumable)
         println!("📥 Collecting V3 pools with progressive database writes (resumable)...");
         let v3_count = self.fetch_all_v3_pools_with_db(pool_db).await?;
         println!("✅ V3 collection status: {} pools in database", v3_count);
         println!();
-        
+
         // Fetch V4 pools with progressive database writes (resumable)
         println!("📥 Collecting V4 pools with progressive database writes (resumable)...");
         let v4_count = self.fetch_all_v4_pools_with_db(pool_db).await?;
         println!("✅ V4 collection status: {} pools in database", v4_count);
         println!();
-        
+
         let total_queries = self.query_count();
-        println!("📈 Query usage this session: {}/{} queries ({:.1}% of free tier)", 
-                 total_queries, 100_000, (total_queries as f32 / 100_000.0) * 100.0);
-        
+        println!(
+            "📈 Query usage this session: {}/{} queries ({:.1}% of free tier)",
+            total_queries,
+            100_000,
+            (total_queries as f32 / 100_000.0) * 100.0
+        );
+
         if total_queries > 100_000 {
             println!("⚠️  Warning: Exceeded free tier query limit in this session!");
         } else {
             println!("✅ Well within free tier limits!");
         }
-        
+
         println!("🎉 Database collection status: {} V2 pairs + {} V3 pools + {} V4 pools = {} total pools", 
                  v2_count, v3_count, v4_count, v2_count + v3_count + v4_count);
-        
+
         Ok((v2_count, v3_count, v4_count))
     }
 }

@@ -277,7 +277,11 @@ impl SandwichPoolIntegration {
             .await?;
 
         // Estimate gas costs using current network gas price
-        let current_gas_price_wei = self.eth_client.get_current_gas_price_wei().await.unwrap_or(500_000_000); // fallback to 0.5 gwei
+        let current_gas_price_wei = self
+            .eth_client
+            .get_current_gas_price_wei()
+            .await
+            .unwrap_or(500_000_000); // fallback to 0.5 gwei
         let gas_limit = 180_000u64; // More accurate estimate for simple swap
         let gas_cost_estimate = U256::from(gas_limit * current_gas_price_wei);
 

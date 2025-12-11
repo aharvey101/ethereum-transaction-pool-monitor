@@ -1,5 +1,5 @@
 //! The Graph Pool Fetcher
-//! 
+//!
 //! This binary fetches pools from all supported DEX protocols from The Graph Protocol
 //! and populates our database with comprehensive pool data.
 //!
@@ -21,13 +21,13 @@ async fn main() -> Result<()> {
     println!("🔗 The Graph Pool Data Collection");
     println!("=================================");
     println!("📡 Using The Graph Protocol's free tier");
-            println!("🎯 Target: 600,000+ pools from Uniswap V2/V3/V4 + SushiSwap + Curve");
+    println!("🎯 Target: 600,000+ pools from Uniswap V2/V3/V4 + SushiSwap + Curve");
     println!("📊 Query budget: 100,000 free queries/month");
     println!();
 
     let db_path = "dex_pools.db";
     let pool_db = PoolDatabase::new(db_path)?;
-    
+
     // Show current database status
     println!("📊 Current database status:");
     match pool_db.pool_count() {
@@ -40,7 +40,7 @@ async fn main() -> Result<()> {
     let v4_count = pool_db.get_pool_count_by_protocol("UniswapV4").unwrap_or(0);
     let sushi_count = pool_db.get_pool_count_by_protocol("SushiSwap").unwrap_or(0);
     let curve_count = pool_db.get_pool_count_by_protocol("Curve").unwrap_or(0);
-    
+
     println!("   - UniswapV2: {}", v2_count);
     println!("   - UniswapV3: {}", v3_count);
     println!("   - UniswapV4: {}", v4_count);
@@ -51,41 +51,77 @@ async fn main() -> Result<()> {
     // Create Graph client with API key
     let api_key = "79942a724597827e4cb8972667c0a355".to_string();
     let mut graph_client = GraphClient::new(api_key);
-    
+
     println!("🔑 Using Graph Network with API key");
     println!("🚀 Starting comprehensive pool data collection...");
     let start_time = std::time::Instant::now();
-    
+
     // Fetch all pools from The Graph with comprehensive coverage including SushiSwap and Curve
     let sushiswap_subgraph_id = "2tGWMrDha4164KkFAfkU3rDCtuxGb4q1emXmFdLLzJ8x";
     let curve_subgraph_id = "3fy93eAT56UJsRCEht8iFhfi6wjHWXtZ9dnnbQmvFopF";
-    let (final_v2_count, final_v3_count, final_v4_count, final_sushi_count, final_curve_count) = 
-        graph_client.populate_database_comprehensive(&pool_db, Some(sushiswap_subgraph_id), Some(curve_subgraph_id)).await?;
-    
+    let (final_v2_count, final_v3_count, final_v4_count, final_sushi_count, final_curve_count) =
+        graph_client
+            .populate_database_comprehensive(
+                &pool_db,
+                Some(sushiswap_subgraph_id),
+                Some(curve_subgraph_id),
+            )
+            .await?;
+
     let duration = start_time.elapsed();
     println!();
-    println!("✅ Pool collection completed in {:.1}s!", duration.as_secs_f32());
+    println!(
+        "✅ Pool collection completed in {:.1}s!",
+        duration.as_secs_f32()
+    );
     println!();
-    
+
     // Show final results
     println!("📊 Final Results:");
     println!("=================");
-    println!("🔗 UniswapV2 pairs: {} (+{})", final_v2_count, final_v2_count - v2_count);
-    println!("🔗 UniswapV3 pools: {} (+{})", final_v3_count, final_v3_count - v3_count);
-    println!("🔗 UniswapV4 pools: {} (+{})", final_v4_count, final_v4_count - v4_count);
-    println!("🔗 SushiSwap pools: {} (+{})", final_sushi_count, final_sushi_count - sushi_count);
-    println!("🔗 Curve pools: {} (+{})", final_curve_count, final_curve_count - curve_count);
-    println!("🔗 Total pools: {}", final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count);
-    println!("📈 Queries used: {}/100,000 ({:.2}%)", 
-             graph_client.query_count(), 
-             (graph_client.query_count() as f32 / 100_000.0) * 100.0);
-    
+    println!(
+        "🔗 UniswapV2 pairs: {} (+{})",
+        final_v2_count,
+        final_v2_count - v2_count
+    );
+    println!(
+        "🔗 UniswapV3 pools: {} (+{})",
+        final_v3_count,
+        final_v3_count - v3_count
+    );
+    println!(
+        "🔗 UniswapV4 pools: {} (+{})",
+        final_v4_count,
+        final_v4_count - v4_count
+    );
+    println!(
+        "🔗 SushiSwap pools: {} (+{})",
+        final_sushi_count,
+        final_sushi_count - sushi_count
+    );
+    println!(
+        "🔗 Curve pools: {} (+{})",
+        final_curve_count,
+        final_curve_count - curve_count
+    );
+    println!(
+        "🔗 Total pools: {}",
+        final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count
+    );
+    println!(
+        "📈 Queries used: {}/100,000 ({:.2}%)",
+        graph_client.query_count(),
+        (graph_client.query_count() as f32 / 100_000.0) * 100.0
+    );
+
     // Verify database
     let final_db_count = pool_db.pool_count()?;
     println!("💾 Database verification: {} pools stored", final_db_count);
-    
+
     // Success criteria
-    if final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count >= 100_000 {
+    if final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count
+        >= 100_000
+    {
         println!();
         println!("🎉 SUCCESS! Database now contains 100,000+ pools");
         println!("🔍 Ready for comprehensive MEV opportunity detection!");
@@ -94,10 +130,17 @@ async fn main() -> Result<()> {
     } else {
         println!();
         println!("⚠️  Expected more pools, but still substantial coverage:");
-        println!("   Current: {} pools", final_v2_count + final_v3_count + final_v4_count + final_sushi_count + final_curve_count);
+        println!(
+            "   Current: {} pools",
+            final_v2_count
+                + final_v3_count
+                + final_v4_count
+                + final_sushi_count
+                + final_curve_count
+        );
         println!("   This should still provide good MEV detection coverage!");
     }
-    
+
     println!();
     println!("🎯 Next steps:");
     println!("   - Implement real-time MEV opportunity detection");

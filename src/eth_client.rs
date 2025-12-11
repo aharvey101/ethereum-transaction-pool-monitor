@@ -619,14 +619,14 @@ impl EthereumClient {
     pub async fn get_current_gas_price_wei(&self) -> Result<u64> {
         // Get base fee from latest block (EIP-1559)
         let base_fee_gwei = self.get_current_base_fee().await.unwrap_or(0.1); // fallback to 0.1 gwei
-        
+
         // Add a small priority fee (0.1 gwei) to ensure inclusion
         let priority_fee_gwei = 0.1;
         let total_gas_price_gwei = base_fee_gwei + priority_fee_gwei;
-        
+
         // Convert to wei (1 gwei = 1e9 wei)
         let gas_price_wei = (total_gas_price_gwei * 1_000_000_000.0) as u64;
-        
+
         Ok(gas_price_wei)
     }
 
@@ -645,17 +645,18 @@ impl EthereumClient {
     /// Test and display current gas price information
     pub async fn test_gas_prices(&self) -> Result<()> {
         println!("🔍 Testing Dynamic Gas Price Fetching");
-        
+
         // Test legacy gas price
         println!("\n📊 Legacy Gas Price (eth_gasPrice):");
         match self.get_gas_price().await {
             Ok(gas_price) => {
-                let gas_price_gwei = gas_price.to_string().parse::<u128>().unwrap_or(0) as f64 / 1e9;
+                let gas_price_gwei =
+                    gas_price.to_string().parse::<u128>().unwrap_or(0) as f64 / 1e9;
                 println!("   Legacy: {:.4} gwei ({} wei)", gas_price_gwei, gas_price);
             }
             Err(e) => println!("   Error: {}", e),
         }
-        
+
         // Test current base fee
         println!("\n📊 Current Base Fee (EIP-1559):");
         match self.get_current_base_fee().await {
@@ -664,29 +665,35 @@ impl EthereumClient {
             }
             Err(e) => println!("   Error: {}", e),
         }
-        
+
         // Test our new combined gas price
         println!("\n📊 New Dynamic Gas Price:");
         match self.get_current_gas_price_wei().await {
             Ok(gas_price_wei) => {
                 let gas_price_gwei = gas_price_wei as f64 / 1e9;
-                println!("   Dynamic: {:.4} gwei ({} wei)", gas_price_gwei, gas_price_wei);
+                println!(
+                    "   Dynamic: {:.4} gwei ({} wei)",
+                    gas_price_gwei, gas_price_wei
+                );
             }
             Err(e) => println!("   Error: {}", e),
         }
-        
+
         // Calculate cost estimates with different scenarios
         println!("\n💰 Gas Cost Estimates (OLD vs NEW):");
-        let current_gas_price = self.get_current_gas_price_wei().await.unwrap_or(500_000_000); // 0.5 gwei fallback
+        let current_gas_price = self
+            .get_current_gas_price_wei()
+            .await
+            .unwrap_or(500_000_000); // 0.5 gwei fallback
         let old_gas_price = 20_000_000_000u64; // 20 gwei
-        
+
         let scenarios = [
             ("Simple swap", 150_000u64),
-            ("Complex swap", 180_000u64), 
+            ("Complex swap", 180_000u64),
             ("Sandwich attack", 400_000u64),
             ("OLD estimate", 550_000u64),
         ];
-        
+
         for (name, gas_limit) in scenarios.iter() {
             let old_cost_wei = gas_limit * old_gas_price;
             let new_cost_wei = gas_limit * current_gas_price;
@@ -694,11 +701,13 @@ impl EthereumClient {
             let new_cost_eth = new_cost_wei as f64 / 1e18;
             let savings = old_cost_eth - new_cost_eth;
             let percent_savings = (savings / old_cost_eth) * 100.0;
-            
-            println!("   {}: OLD {:.6} ETH vs NEW {:.6} ETH (Save {:.6} ETH, {:.1}%)", 
-                    name, old_cost_eth, new_cost_eth, savings, percent_savings);
+
+            println!(
+                "   {}: OLD {:.6} ETH vs NEW {:.6} ETH (Save {:.6} ETH, {:.1}%)",
+                name, old_cost_eth, new_cost_eth, savings, percent_savings
+            );
         }
-        
+
         println!("\n✅ Gas price testing completed!");
         Ok(())
     }

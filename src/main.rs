@@ -8,14 +8,14 @@
 mod app;
 mod bot_runner;
 mod dex;
-mod dynamic_pool_discovery;
+// mod dynamic_pool_discovery;
 mod enhanced_revm_simulator;
 mod eth_client;
 mod flash_loan_manager;
 mod graph_client;
 mod mempool_monitor;
 mod mev_bundle_builder;
-mod pool_calculators;
+// mod pool_calculators;
 mod pool_db;
 mod pool_fetcher;
 mod pool_loader;
@@ -944,11 +944,11 @@ async fn run_mev_bot(
 /// Test gas price fetching and show comparison between old and new estimates
 async fn test_gas_prices(rpc_url: &str) -> Result<()> {
     use eth_client::EthereumClient;
-    
+
     tracing::info!("Creating Ethereum client for gas price testing...");
     let eth_client = EthereumClient::new(rpc_url).await?;
-    
+
     eth_client.test_gas_prices().await?;
-    
+
     Ok(())
 }

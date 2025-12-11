@@ -1,9 +1,9 @@
 use crate::app::AppState;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Alignment, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Table, Row, Gauge},
+    widgets::{Block, Borders, Gauge, Row, Table},
     Frame,
 };
 
@@ -49,21 +49,38 @@ fn draw_header(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
         "Disconnected"
     };
 
-    let header = ratatui::widgets::Paragraph::new(
-        Line::from(vec![
-            Span::styled(title, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw(" | "),
-            Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
-            Span::raw(" | "),
-            Span::styled(
-                format!("Target Block: #{}", app.next_block_number), 
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            ),
-            Span::raw(" | "),
-            Span::raw(format!("TX: {}  | Pools: {} | Sync: {}", app.last_update, app.pool_count, app.last_pool_sync)),
-        ])
+    let header = ratatui::widgets::Paragraph::new(Line::from(vec![
+        Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" | "),
+        Span::styled(
+            status_text,
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" | "),
+        Span::styled(
+            format!("Target Block: #{}", app.next_block_number),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" | "),
+        Span::raw(format!(
+            "TX: {}  | Pools: {} | Sync: {}",
+            app.last_update, app.pool_count, app.last_pool_sync
+        )),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::BOTTOM)
+            .style(Style::default().bg(Color::Black)),
     )
-    .block(Block::default().borders(Borders::BOTTOM).style(Style::default().bg(Color::Black)))
     .alignment(Alignment::Left);
 
     f.render_widget(header, area);
@@ -72,10 +89,11 @@ fn draw_header(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
 fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
     // Calculate how many rows can fit (subtract 3 for header, borders, etc)
     let available_rows = area.height.saturating_sub(3) as usize;
-    
+
     // Use cached filtered/sorted data (cache is pre-populated in main loop for performance)
     // Direct access to cached indices to avoid expensive re-sorting
-    let transactions = app.cached_filtered_sorted
+    let transactions = app
+        .cached_filtered_sorted
         .iter()
         .skip(app.scroll_offset)
         .take(available_rows)
@@ -84,51 +102,70 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
 
     // Pre-allocate row vector for better performance
     let mut rows = Vec::with_capacity(transactions.len());
-    
+
     for (i, tx) in transactions.iter().enumerate() {
         let is_selected = app.selected_index == app.scroll_offset + i;
-        
+
         // Style based on selection and DeFi activity type
         let style = if is_selected {
-            Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else {
             // Different colors for different DeFi activity types
             use crate::eth_client::DefiActivityType;
             match tx.defi_activity_type {
-                DefiActivityType::Stablecoin => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
-                DefiActivityType::TokenContract => Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                DefiActivityType::DexPool => Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                DefiActivityType::DexRouter => Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                DefiActivityType::Stablecoin => Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::BOLD),
+                DefiActivityType::TokenContract => Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+                DefiActivityType::DexPool => Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+                DefiActivityType::DexRouter => Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
                 DefiActivityType::None => Style::default(),
             }
         };
 
         // Display decoded swap info or regular "to" address
         let to_display = if let Some(swap_info) = &tx.swap_info {
-            let mut display = format!("{}: {} → {}", swap_info.function_name, swap_info.token_in, swap_info.token_out);
-            
+            let mut display = format!(
+                "{}: {} → {}",
+                swap_info.function_name, swap_info.token_in, swap_info.token_out
+            );
+
             // Add amount information if available
-            if let (Some(amount_in), Some(amount_out_min)) = (&swap_info.amount_in, &swap_info.amount_out_min) {
+            if let (Some(amount_in), Some(amount_out_min)) =
+                (&swap_info.amount_in, &swap_info.amount_out_min)
+            {
                 display.push_str(&format!(" | {} → {}", amount_in, amount_out_min));
             } else if let Some(amount_in) = &swap_info.amount_in {
                 display.push_str(&format!(" | In: {}", amount_in));
             } else if let Some(amount_out_min) = &swap_info.amount_out_min {
                 display.push_str(&format!(" | Min: {}", amount_out_min));
             }
-            
+
             display
         } else {
             tx.to.as_deref().unwrap_or("Contract Creation").to_string()
         };
 
         // Create row - balance performance with lifetime requirements
-        rows.push(Row::new(vec![
-            tx.from.clone(), // Clone needed for owned string
-            to_display, // Already owned string
-            tx.value_eth.clone(), // Clone needed for owned string 
-            tx.gas_price_gwei.clone(), // Clone needed for owned string
-            tx.nonce.to_string(), // Convert to owned string
-        ]).style(style));
+        rows.push(
+            Row::new(vec![
+                tx.from.clone(),           // Clone needed for owned string
+                to_display,                // Already owned string
+                tx.value_eth.clone(),      // Clone needed for owned string
+                tx.gas_price_gwei.clone(), // Clone needed for owned string
+                tx.nonce.to_string(),      // Convert to owned string
+            ])
+            .style(style),
+        );
     }
 
     let table = Table::new(
@@ -142,14 +179,24 @@ fn draw_transaction_list(f: &mut Frame, app: &AppState, area: ratatui::layout::R
         ],
     )
     .header(
-        Row::new(vec!["From", "To / Swap Info", "Value", "Gas Price", "Nonce"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        Row::new(vec![
+            "From",
+            "To / Swap Info",
+            "Value",
+            "Gas Price",
+            "Nonce",
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     )
     .block(
         Block::default()
             .borders(Borders::ALL)
             .title(&*app.cached_title) // Use cached title to avoid repeated format! calls
-            .title_alignment(Alignment::Left)
+            .title_alignment(Alignment::Left),
     );
 
     f.render_widget(table, area);
@@ -161,7 +208,7 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
         .title(" Loading Pools ")
         .title_alignment(Alignment::Center)
         .style(Style::default().bg(Color::Black));
-    
+
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -170,11 +217,11 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(1),  // Title/status
-            Constraint::Length(1),  // Pool counts
-            Constraint::Length(1),  // Empty
-            Constraint::Length(3),  // Progress bar
-            Constraint::Min(0),     // Rest
+            Constraint::Length(1), // Title/status
+            Constraint::Length(1), // Pool counts
+            Constraint::Length(1), // Empty
+            Constraint::Length(3), // Progress bar
+            Constraint::Min(0),    // Rest
         ])
         .split(inner);
 
@@ -182,50 +229,60 @@ fn draw_loading_overlay(f: &mut Frame, app: &AppState, area: Rect) {
     let status_line = Line::from(vec![
         Span::styled(
             "⏳ ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             &app.pools_loading_progress,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
-    
-    let status_widget = ratatui::widgets::Paragraph::new(status_line)
-        .alignment(Alignment::Center);
+
+    let status_widget = ratatui::widgets::Paragraph::new(status_line).alignment(Alignment::Center);
     f.render_widget(status_widget, chunks[0]);
 
     // Pool counts
     let pool_counts = Line::from(vec![
         Span::styled(
             "V2: ",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{}", app.v2_pools_found),
-            Style::default().fg(Color::Green)
+            Style::default().fg(Color::Green),
         ),
         Span::raw("  |  "),
         Span::styled(
             "V3: ",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{}", app.v3_pools_found),
-            Style::default().fg(Color::Green)
+            Style::default().fg(Color::Green),
         ),
         Span::raw("  |  "),
         Span::styled(
             "Total: ",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("{}", app.pools_found_count),
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
-    
-    let counts_widget = ratatui::widgets::Paragraph::new(pool_counts)
-        .alignment(Alignment::Center);
+
+    let counts_widget = ratatui::widgets::Paragraph::new(pool_counts).alignment(Alignment::Center);
     f.render_widget(counts_widget, chunks[1]);
 
     // Progress bar
@@ -241,9 +298,10 @@ fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
     let help_text = "↑/↓ or Mouse Scroll: Navigate  | f: Filter (DeFi/All) | s: Sort  | q: Quit";
     let color_legend = "Colors: Blue=Stablecoin | Yellow=Token | Green=DEX Pool | Cyan=DEX Router";
     let status = &app.status;
-    
+
     let filter_status = if app.is_loading_more {
-        format!("Filter: {} | Sort: {} | TX Count: {} | Loading more...", 
+        format!(
+            "Filter: {} | Sort: {} | TX Count: {} | Loading more...",
             match app.filter_mode {
                 crate::app::FilterMode::All => "All Transactions",
                 crate::app::FilterMode::DexOnly => "DeFi Only",
@@ -253,7 +311,8 @@ fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
             app.get_filtered_transaction_count_display()
         )
     } else {
-        format!("Filter: {} | Sort: {} | TX Count: {}", 
+        format!(
+            "Filter: {} | Sort: {} | TX Count: {}",
             match app.filter_mode {
                 crate::app::FilterMode::All => "All Transactions",
                 crate::app::FilterMode::DexOnly => "DeFi Only",
@@ -264,17 +323,18 @@ fn draw_footer(f: &mut Frame, app: &AppState, area: ratatui::layout::Rect) {
         )
     };
 
-    let footer = ratatui::widgets::Paragraph::new(
-        vec![
-            Line::from(vec![Span::raw(help_text)]),
-            Line::from(vec![Span::styled(color_legend, Style::default().fg(Color::Gray))]),
-            Line::from(vec![
-                Span::styled(&filter_status, Style::default().fg(Color::Yellow)),
-                Span::raw(" | "),
-                Span::styled(status, Style::default().fg(Color::Cyan)),
-            ]),
-        ]
-    )
+    let footer = ratatui::widgets::Paragraph::new(vec![
+        Line::from(vec![Span::raw(help_text)]),
+        Line::from(vec![Span::styled(
+            color_legend,
+            Style::default().fg(Color::Gray),
+        )]),
+        Line::from(vec![
+            Span::styled(&filter_status, Style::default().fg(Color::Yellow)),
+            Span::raw(" | "),
+            Span::styled(status, Style::default().fg(Color::Cyan)),
+        ]),
+    ])
     .block(Block::default().borders(Borders::TOP))
     .alignment(Alignment::Left);
 
