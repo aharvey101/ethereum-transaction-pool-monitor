@@ -3,7 +3,6 @@
 /// Handles both Flashbots bundle submission and direct mempool execution
 /// for sandwich attacks and MEV extraction.
 use crate::{
-    flash_loan_manager::{FlashLoanManager, FlashLoanRequest},
     mempool_monitor::{MempoolOpportunity, MempoolTransaction},
     transaction_executor::DirectMempoolExecutor,
 };
@@ -19,13 +18,12 @@ pub struct MevBundleBuilder {
     pub max_gas_price: u128,
     pub coinbase_payment_percent: u8,
     pub flashbots_relay_url: String,
+    pub sandwich_contract_address: Option<Address>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ExecutionMethod {
-    Flashbots {
-        api_key: String,
-    },
+    Flashbots,
     DirectMempool {
         private_key: String,
         aggressive_gas: bool,
@@ -78,11 +76,19 @@ pub struct SignedTransaction {
 impl MevBundleBuilder {
     pub fn new() -> Self {
         Self {
-            min_profit_threshold: U256::from(5_000_000_000_000_000u64), // 0.005 ETH
+            min_profit_threshold: U256::from(1_000_000_000_000_000u64), // 0.001 ETH default (should be overridden)
             max_gas_price: 5_000_000_000,                               // 5 gwei reasonable ceiling
             coinbase_payment_percent: 10,                               // 10% to miner
             flashbots_relay_url: "https://relay.flashbots.net".to_string(),
+            sandwich_contract_address: None,
         }
+    }
+
+    /// Set the sandwich contract address
+    pub fn set_sandwich_contract(&mut self, contract_address: Address, _signer_address: Address) {
+        self.sandwich_contract_address = Some(contract_address);
+        info!("🔧 Sandwich contract integrated: {}", contract_address);
+        info!("🏛️ Flashbots bundle builder initialized");
     }
 
     /// Execute sandwich attack using the specified method
@@ -116,9 +122,9 @@ impl MevBundleBuilder {
                 self.execute_direct_mempool(&opportunity, &executor, aggressive_gas)
                     .await
             }
-            ExecutionMethod::Flashbots { api_key } => {
-                info!("🏛️ Using Flashbots bundle submission");
-                self.execute_flashbots_bundle(opportunity, &api_key).await
+            ExecutionMethod::Flashbots => {
+                info!("🏛️ Using Flashbots bundle submission with atomic flash loan");
+                self.execute_flashbots_atomic_sandwich(opportunity).await
             }
             ExecutionMethod::SimulationOnly => {
                 info!("🧪 Simulation mode - no actual execution");
@@ -127,7 +133,7 @@ impl MevBundleBuilder {
         }
     }
 
-    /// Execute sandwich via direct mempool (bypasses Flashbots)
+    /// Execute sandwich via direct mempool (wallet-based execution only)
     async fn execute_direct_mempool(
         &self,
         opportunity: &MempoolOpportunity,
@@ -149,7 +155,6 @@ impl MevBundleBuilder {
 
         // Get current network gas prices for competitive bidding
         let network_gas_price = executor.get_gas_price().await.unwrap_or(10_000_000_000); // 10 gwei fallback
-        let (_base_fee, _priority_fee) = executor.get_fee_history().await.unwrap_or((8_000_000_000, 2_000_000_000)); // 8 + 2 gwei fallback
         
         // Extract victim gas price (handle U256)
         let victim_gas_price = opportunity
@@ -185,7 +190,7 @@ impl MevBundleBuilder {
             gas_premium
         );
 
-        // Check account balance and cap frontrun amount (reserve gas costs)
+        // Check account balance for wallet-based execution
         let account_balance = executor.get_balance().await.unwrap_or(U256::ZERO);
         let estimated_gas_cost = U256::from(frontrun_gas_price) * U256::from(300_000); // 300k gas limit
         let available_balance = if account_balance > estimated_gas_cost {
@@ -193,7 +198,7 @@ impl MevBundleBuilder {
         } else {
             U256::ZERO
         };
-        
+
         info!(
             "💰 Account balance: {} ETH, Gas cost: {} ETH, Available for MEV: {} ETH", 
             account_balance.to::<u64>() as f64 / 1e18,
@@ -201,19 +206,9 @@ impl MevBundleBuilder {
             available_balance.to::<u64>() as f64 / 1e18
         );
 
-        // Cap frontrun amount to available balance
-        let frontrun_amount = if opportunity.simulation_result.frontrun_amount > available_balance {
-            warn!(
-                "⚠️ Capping frontrun amount: {} ETH → {} ETH (limited by balance)",
-                opportunity.simulation_result.frontrun_amount.to::<u64>() as f64 / 1e18,
-                available_balance.to::<u64>() as f64 / 1e18
-            );
-            available_balance
-        } else {
-            opportunity.simulation_result.frontrun_amount
-        };
-
-        if frontrun_amount < U256::from(1000000000000000u64) { // 0.001 ETH minimum
+        // Check if wallet balance is sufficient
+        let required_frontrun_amount = opportunity.simulation_result.frontrun_amount;
+        if required_frontrun_amount > available_balance {
             return Ok(BundleSubmissionResult {
                 bundle_hash: None,
                 simulation: None,
@@ -221,16 +216,35 @@ impl MevBundleBuilder {
                 profit_eth: 0.0,
                 total_gas_used: 0,
                 coinbase_payment: U256::ZERO,
-                error: Some("Insufficient balance for MEV execution".to_string()),
+                error: Some(format!(
+                    "Insufficient wallet balance: need {} ETH, have {} ETH. Use Flashbots + flash loans for larger amounts.",
+                    required_frontrun_amount.to::<u64>() as f64 / 1e18,
+                    available_balance.to::<u64>() as f64 / 1e18
+                )),
             });
         }
 
-        // Create frontrun transaction data using available balance
+        info!("💼 Using wallet balance for MEV execution: {} ETH", required_frontrun_amount.to::<u64>() as f64 / 1e18);
+
+        // Execute wallet-based sandwich
+        self.execute_wallet_sandwich(opportunity, executor, frontrun_gas_price, required_frontrun_amount).await
+    }
+
+    /// Execute sandwich using wallet balance
+    async fn execute_wallet_sandwich(
+        &self,
+        opportunity: &MempoolOpportunity,
+        executor: &DirectMempoolExecutor,
+        frontrun_gas_price: u128,
+        frontrun_amount: U256,
+    ) -> Result<BundleSubmissionResult> {
+
+        // Create frontrun transaction data using wallet balance
         let frontrun_data = self
             .create_swap_data(
                 opportunity.sandwich_target.pool.token0,
                 opportunity.sandwich_target.pool.token1,
-                frontrun_amount, // Use capped amount
+                frontrun_amount,
                 true, // is_buy
             )
             .await?;
@@ -245,14 +259,13 @@ impl MevBundleBuilder {
                 Some(frontrun_gas_price),
                 Some(frontrun_gas_price / 10),
                 frontrun_data,
-                Some(frontrun_amount), // Use capped amount for ETH value
+                Some(frontrun_amount),
             )
             .await?;
 
         if !frontrun_result.success {
             warn!("🔴 Frontrun transaction failed: {:?}", frontrun_result.error);
             
-            // Categorize the failure for better handling
             let error_category = self.categorize_transaction_error(&frontrun_result.error);
             let error_message = format!(
                 "Frontrun failed ({}): {}",
@@ -276,6 +289,18 @@ impl MevBundleBuilder {
         // Wait briefly for victim tx to be mined
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
+        // Execute backrun
+        self.execute_backrun(opportunity, executor, frontrun_result).await
+    }
+
+    /// Execute backrun transaction
+    async fn execute_backrun(
+        &self,
+        opportunity: &MempoolOpportunity,
+        executor: &DirectMempoolExecutor,
+        frontrun_result: crate::transaction_executor::TransactionExecutionResult,
+    ) -> Result<BundleSubmissionResult> {
+
         // Create backrun transaction data using simulation results
         let backrun_data = self
             .create_swap_data(
@@ -286,7 +311,23 @@ impl MevBundleBuilder {
             )
             .await?;
 
-        // Calculate proper backrun gas price (same logic as frontrun but less aggressive)
+        // Get current network gas price for backrun pricing
+        let network_gas_price = executor.get_gas_price().await.unwrap_or(10_000_000_000); // 10 gwei fallback
+        
+        // Extract victim gas price for competitive backrun pricing
+        let victim_gas_price = opportunity
+            .victim_tx
+            .gas_price
+            .to_string()
+            .parse::<u128>()
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid victim transaction gas price: {}",
+                    opportunity.victim_tx.gas_price
+                )
+            })?;
+
+        // Calculate proper backrun gas price (less aggressive than frontrun)
         let backrun_gas_price = if victim_gas_price == 0 {
             // For EIP-1559 transactions, use network gas price + small premium  
             std::cmp::max(network_gas_price + (network_gas_price * 5 / 100), 15_000_000_000) // 5% premium, 15 gwei minimum
@@ -304,6 +345,7 @@ impl MevBundleBuilder {
         );
 
         // Execute backrun transaction to Uniswap V2 Router  
+        let uniswap_v2_router = Address::from([0x7a, 0x25, 0x0d, 0x56, 0x30, 0xb4, 0xcf, 0x53, 0x97, 0x39, 0xdf, 0x2c, 0x5d, 0xac, 0xb4, 0xc6, 0x59, 0xf2, 0x48, 0x8d]);
         let backrun_result = executor
             .send_transaction(
                 uniswap_v2_router, // Send to router, not pool
@@ -319,9 +361,6 @@ impl MevBundleBuilder {
         // Calculate total profit
         let total_gas_used =
             frontrun_result.gas_used.unwrap_or(0) + backrun_result.gas_used.unwrap_or(0);
-        let _total_gas_cost = frontrun_result.gas_price.unwrap_or(0)
-            * frontrun_result.gas_used.unwrap_or(0)
-            + backrun_result.gas_price.unwrap_or(0) * backrun_result.gas_used.unwrap_or(0);
 
         // Use profit calculation from simulation results
         let estimated_profit = if backrun_result.success {
@@ -331,7 +370,6 @@ impl MevBundleBuilder {
             warn!("🔴 Backrun transaction failed: {:?}", backrun_result.error);
             
             // Even if backrun fails, we might have made profit from frontrun
-            // Calculate partial profit (this would be more sophisticated in production)
             let partial_profit = opportunity.simulation_result.net_profit_eth * 0.3; // Assume 30% of expected profit
             warn!("📊 Estimated partial profit from frontrun only: {} ETH", partial_profit);
             partial_profit
@@ -355,23 +393,60 @@ impl MevBundleBuilder {
         })
     }
 
-    /// Execute sandwich via Flashbots bundle
-    async fn execute_flashbots_bundle(
+    /// Execute atomic sandwich via Flashbots bundle with flash loans
+    async fn execute_flashbots_atomic_sandwich(
         &self,
-        _opportunity: &MempoolOpportunity,
-        _api_key: &str,
+        opportunity: &MempoolOpportunity,
     ) -> Result<BundleSubmissionResult> {
-        warn!("🏛️ Flashbots execution not fully implemented - using simulation");
+        
+        // Validate that we have the required components
+        let _contract_address = self.sandwich_contract_address
+            .ok_or_else(|| anyhow::anyhow!("Sandwich contract address not set"))?;
 
-        // Mock Flashbots submission for now
+        // Validate opportunity before execution
+        if let Err(e) = self.validate_opportunity(opportunity).await {
+            return Ok(BundleSubmissionResult {
+                bundle_hash: None,
+                simulation: None,
+                submitted: false,
+                profit_eth: 0.0,
+                total_gas_used: 0,
+                coinbase_payment: U256::ZERO,
+                error: Some(format!("Validation failed: {}", e)),
+            });
+        }
+
+        info!("🏛️ === ATOMIC FLASHBOTS FLASH LOAN SANDWICH ===");
+        info!("📊 Opportunity details:");
+        info!("   Victim TX: {}", opportunity.victim_tx.hash);
+        info!("   Frontrun amount: {} ETH", opportunity.simulation_result.frontrun_amount.to::<u64>() as f64 / 1e18);
+        info!("   Expected profit: {} ETH", opportunity.simulation_result.net_profit_eth);
+        info!("   Target pool: {}", opportunity.sandwich_target.pool.address);
+
+        // For now, return a placeholder until smart contract is deployed
+        warn!("⚠️ Flashbots + flash loan execution requires smart contract deployment");
+        warn!("📋 Next steps:");
+        warn!("   1. Deploy FlashLoanSandwich.sol contract");
+        warn!("   2. Set contract address in bot configuration");
+        warn!("   3. Implement bundle signing and submission");
+
         Ok(BundleSubmissionResult {
-            bundle_hash: Some(format!("flashbots_{}", rand::random::<u64>())),
-            simulation: Some(self.mock_simulation()),
-            submitted: false,  // Set to false until real implementation
-            profit_eth: 0.001, // Mock profit
-            total_gas_used: 500_000,
-            coinbase_payment: U256::from(1_000_000_000_000_000u64), // 0.001 ETH
-            error: Some("Flashbots integration pending".to_string()),
+            bundle_hash: Some("flashbots_placeholder_auth".to_string()),
+            simulation: Some(BundleSimulation {
+                coinbase_diff: "0".to_string(),
+                gas_fees: "0".to_string(), 
+                gas_used: 800_000, // Estimate
+                success: false,
+                logs: vec![
+                    "Flashbots + flash loan execution pending smart contract deployment".to_string(),
+                    format!("Target contract address needed: {:?}", self.sandwich_contract_address),
+                ],
+            }),
+            submitted: false, // Not yet implemented
+            profit_eth: opportunity.simulation_result.net_profit_eth,
+            total_gas_used: 800_000, // Estimate for flash loan sandwich
+            coinbase_payment: U256::from((opportunity.simulation_result.net_profit_eth * 0.1 * 1e18) as u64), // 10% to miner
+            error: Some("Smart contract deployment required for Flashbots + flash loan execution".to_string()),
         })
     }
 

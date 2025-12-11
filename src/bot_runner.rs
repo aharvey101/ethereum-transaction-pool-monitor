@@ -38,8 +38,9 @@ pub struct BotConfig {
     pub enable_flashbots: bool,
     pub direct_mempool: bool, // Use direct mempool submission (like arboo)
     pub aggressive_gas: bool, // Use aggressive gas pricing for MEV
+    pub prefer_flash_loans: bool, // Prioritize flash loans over wallet balance
     pub signing_key: Option<String>,
-    pub flashbots_api_key: Option<String>,
+    pub sandwich_contract_address: Option<String>, // Deployed sandwich contract
 }
 
 impl Default for BotConfig {
@@ -51,7 +52,7 @@ impl Default for BotConfig {
             confidence_threshold: 0.3, // Lower threshold for testing
             enable_websocket: true,
             max_gas_price: U256::from(200_000_000_000_u64), // 200 gwei for testing
-            min_profit_threshold: 0.0001,                   // 0.0001 ETH minimum profit for testing
+            min_profit_threshold: 0.001,                    // 1 mETH default (should be overridden by CLI)
             max_concurrent_bundles: 5,
             bundle_timeout_seconds: 10,
             stats_interval_seconds: 30,
@@ -59,8 +60,9 @@ impl Default for BotConfig {
             enable_flashbots: false, // Start with simulation mode
             direct_mempool: false,   // Default to simulation
             aggressive_gas: false,   // Conservative gas pricing by default
+            prefer_flash_loans: true, // Default to flash loans for capital efficiency
             signing_key: None,
-            flashbots_api_key: None,
+            sandwich_contract_address: None,
         }
     }
 }
@@ -474,14 +476,7 @@ impl MevBotRunner {
         opportunity_queue: Arc<RwLock<VecDeque<MempoolOpportunity>>>,
     ) {
         let execution_method = if config.enable_flashbots {
-            if let Some(api_key) = &config.flashbots_api_key {
-                crate::mev_bundle_builder::ExecutionMethod::Flashbots {
-                    api_key: api_key.clone(),
-                }
-            } else {
-                warn!("Flashbots enabled but no API key provided, using simulation mode");
-                crate::mev_bundle_builder::ExecutionMethod::SimulationOnly
-            }
+            crate::mev_bundle_builder::ExecutionMethod::Flashbots
         } else if config.direct_mempool {
             if let Some(private_key) = &config.signing_key {
                 crate::mev_bundle_builder::ExecutionMethod::DirectMempool {
@@ -506,6 +501,41 @@ impl MevBotRunner {
             .unwrap_or(200_000_000_000);
         bundle_builder.min_profit_threshold =
             U256::from((config.min_profit_threshold * 1e18) as u64);
+
+        // Set sandwich contract for Flashbots execution
+        if config.enable_flashbots {
+            if let Some(contract_addr) = &config.sandwich_contract_address {
+                match contract_addr.parse::<alloy_primitives::Address>() {
+                    Ok(sandwich_contract_address) => {
+                        info!("🏗️ Using sandwich contract at: {}", sandwich_contract_address);
+                        // Note: The signer address comes from the signing_key, not separate config
+                        if let Some(signing_key) = &config.signing_key {
+                            match alloy::signers::local::PrivateKeySigner::from_slice(
+                                &hex::decode(signing_key.trim_start_matches("0x")).unwrap_or_default()
+                            ) {
+                                Ok(signer) => {
+                                    let signer_address = signer.address();
+                                    info!("🔑 Using signer address: {}", signer_address);
+                                    bundle_builder.set_sandwich_contract(sandwich_contract_address, signer_address);
+                                }
+                                Err(e) => {
+                                    warn!("❌ Invalid signing key: {}. Disabling Flashbots execution.", e);
+                                }
+                            }
+                        } else {
+                            warn!("❌ No signing key provided. Disabling Flashbots execution.");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ Invalid sandwich contract address '{}': {}. Disabling Flashbots execution.", contract_addr, e);
+                    }
+                }
+            } else {
+                warn!("❌ No sandwich contract address configured. Disabling Flashbots execution.");
+                warn!("   To enable Flashbots, deploy the contract from contracts/FlashLoanSandwich.sol");
+                warn!("   and set the address in config.sandwich_contract_address");
+            }
+        }
 
         let mut interval = interval(Duration::from_millis(100)); // Check every 100ms
 

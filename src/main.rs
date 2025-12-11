@@ -895,8 +895,9 @@ async fn run_mev_bot(
         enable_flashbots,
         direct_mempool,
         aggressive_gas: false, // Default conservative
+        prefer_flash_loans: true, // Prioritize Flashbots + flash loans for capital efficiency
         signing_key: private_key.clone(),
-        flashbots_api_key: None, // Not supported in simplified version
+        sandwich_contract_address: Some("0x79E2a11cD852479c91C63660F69A9b1e7bA5dfE8".to_string()), // Deployed contract
     };
 
     // Determine execution method
