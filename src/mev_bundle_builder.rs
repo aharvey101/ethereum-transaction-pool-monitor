@@ -286,14 +286,31 @@ impl MevBundleBuilder {
             )
             .await?;
 
+        // Calculate proper backrun gas price (same logic as frontrun but less aggressive)
+        let backrun_gas_price = if victim_gas_price == 0 {
+            // For EIP-1559 transactions, use network gas price + small premium  
+            std::cmp::max(network_gas_price + (network_gas_price * 5 / 100), 15_000_000_000) // 5% premium, 15 gwei minimum
+        } else {
+            // For legacy transactions, use victim gas price + small premium but ensure minimum
+            let calculated = victim_gas_price + (victim_gas_price * 5 / 100); // 5% premium for backrun
+            std::cmp::max(calculated, 15_000_000_000) // 15 gwei minimum
+        };
+
+        info!(
+            "⚡ Backrun gas pricing: {} gwei (victim: {} gwei, network: {} gwei)",
+            backrun_gas_price / 1_000_000_000,
+            victim_gas_price / 1_000_000_000,
+            network_gas_price / 1_000_000_000
+        );
+
         // Execute backrun transaction to Uniswap V2 Router  
         let backrun_result = executor
             .send_transaction(
                 uniswap_v2_router, // Send to router, not pool
-                Some(victim_gas_price), // Use normal gas price for backrun
+                Some(backrun_gas_price), // Use proper gas price for backrun
                 Some(250_000),
-                Some(victim_gas_price),
-                Some(victim_gas_price / 10),
+                Some(backrun_gas_price),
+                Some(backrun_gas_price / 10),
                 backrun_data,
                 Some(U256::ZERO), // Backrun typically doesn't send ETH value
             )

@@ -1533,21 +1533,148 @@ impl MempoolMonitor {
         Ok(Some(result))
     }
 
-    /// Extract trade amount from victim transaction
+    /// Extract trade amount from victim transaction by parsing calldata
     fn extract_trade_amount(&self, victim_tx: &MempoolTransaction) -> Result<f64> {
-        // Convert U256 value to f64 ETH
+        // First try to extract from ETH value (for ETH swaps)
         let value_wei = victim_tx.value;
         let value_eth = value_wei.to::<u64>() as f64 / 1e18;
 
-        // Use transaction value or use the estimated USD value
-        if value_eth > 0.0 {
-            Ok(value_eth)
-        } else if victim_tx.estimated_value_usd > 0.0 {
-            // Convert USD to ETH (assume $3200 per ETH)
-            Ok(victim_tx.estimated_value_usd / 3200.0)
-        } else {
-            // Estimate based on gas usage - typical DEX swap
-            Ok(0.1) // Default to 0.1 ETH
+        if value_eth > 0.001 {
+            // ETH swap - use the ETH value
+            info!("💰 Detected ETH swap: {} ETH", value_eth);
+            return Ok(value_eth);
+        }
+
+        // Try to parse calldata for token swap amounts
+        if let Some(parsed_amount) = self.parse_swap_amount_from_calldata(victim_tx) {
+            info!("💰 Detected token swap: {} ETH equivalent", parsed_amount);
+            return Ok(parsed_amount);
+        }
+
+        // Use estimated USD value if available
+        if victim_tx.estimated_value_usd > 1.0 {
+            let eth_equivalent = victim_tx.estimated_value_usd / 3200.0; // Assume $3200 per ETH
+            info!("💰 Using USD estimate: ${} → {} ETH", victim_tx.estimated_value_usd, eth_equivalent);
+            return Ok(eth_equivalent);
+        }
+
+        // Conservative default for unknown swaps
+        let default_amount = 0.05; // Reduced from 0.1 to be more conservative
+        info!("⚠️ Using default victim amount: {} ETH (could not parse calldata)", default_amount);
+        Ok(default_amount)
+    }
+
+    /// Parse swap amount from transaction calldata
+    fn parse_swap_amount_from_calldata(&self, victim_tx: &MempoolTransaction) -> Option<f64> {
+        let input_data = &victim_tx.input;
+        if input_data.len() < 4 {
+            info!("🔍 Calldata parsing failed: insufficient data length {}", input_data.len());
+            return None;
+        }
+
+        // Get function selector (first 4 bytes)
+        let selector = &input_data[0..4];
+        let selector_hex = format!("0x{:02x}{:02x}{:02x}{:02x}", selector[0], selector[1], selector[2], selector[3]);
+        info!("🔍 Parsing calldata for selector: {}", selector_hex);
+        
+        match selector {
+            // swapExactETHForTokens(uint256,address[],address,uint256)
+            [0x7f, 0xf3, 0x6a, 0xb5] => {
+                info!("🔍 Detected swapExactETHForTokens - checking msg.value");
+                // ETH amount should be in msg.value, but let's also try parsing minimum amount out
+                if input_data.len() >= 36 {
+                    let amount_bytes: [u8; 32] = input_data[4..36].try_into().ok()?;
+                    let min_amount_out = U256::from_be_bytes(amount_bytes);
+                    let min_out_f64 = min_amount_out.to::<u128>() as f64 / 1e18;
+                    info!("🔍 Minimum amount out: {} (as ETH equivalent estimate)", min_out_f64);
+                    
+                    // Use a conservative estimate based on minimum out (assume ~1:1000 ratio for popular tokens)
+                    if min_out_f64 > 1.0 {
+                        let estimated_eth = min_out_f64 / 1000.0; // Very rough estimate
+                        Some(estimated_eth.min(10.0).max(0.001))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            
+            // swapExactTokensForTokens(uint256,uint256,address[],address,uint256)
+            [0x38, 0xed, 0x17, 0x39] => {
+                info!("🔍 Detected swapExactTokensForTokens");
+                if input_data.len() >= 36 {
+                    let amount_bytes: [u8; 32] = input_data[4..36].try_into().ok()?;
+                    let amount = U256::from_be_bytes(amount_bytes);
+                    let amount_f64 = amount.to::<u128>() as f64 / 1e18;
+                    info!("🔍 Parsed token amount: {} (assuming 18 decimals)", amount_f64);
+                    
+                    if amount_f64 > 0.001 && amount_f64 < 1000.0 {
+                        Some(amount_f64.min(10.0))
+                    } else {
+                        info!("🔍 Amount out of range: {}", amount_f64);
+                        None
+                    }
+                } else {
+                    info!("🔍 Insufficient data for swapExactTokensForTokens");
+                    None
+                }
+            }
+            
+            // swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+            [0x79, 0x1a, 0xc9, 0x47] => {
+                info!("🔍 Detected swapExactTokensForTokensSupportingFeeOnTransferTokens");
+                if input_data.len() >= 36 {
+                    let amount_bytes: [u8; 32] = input_data[4..36].try_into().ok()?;
+                    let amount = U256::from_be_bytes(amount_bytes);
+                    let amount_f64 = amount.to::<u128>() as f64 / 1e18;
+                    info!("🔍 Parsed fee-on-transfer token amount: {} (assuming 18 decimals)", amount_f64);
+                    
+                    if amount_f64 > 0.001 && amount_f64 < 1000.0 {
+                        Some(amount_f64.min(10.0))
+                    } else {
+                        info!("🔍 Amount out of range: {}", amount_f64);
+                        None
+                    }
+                } else {
+                    info!("🔍 Insufficient data for swapExactTokensForTokensSupportingFeeOnTransferTokens");
+                    None
+                }
+            }
+            
+            // swapTokensForExactTokens(uint256,uint256,address[],address,uint256)
+            [0x88, 0x03, 0xdb, 0xee] => {
+                info!("🔍 Detected swapTokensForExactTokens");
+                if input_data.len() >= 68 {
+                    let amount_bytes: [u8; 32] = input_data[36..68].try_into().ok()?;
+                    let amount = U256::from_be_bytes(amount_bytes);
+                    let amount_f64 = amount.to::<u128>() as f64 / 1e18;
+                    info!("🔍 Parsed max input amount: {} (assuming 18 decimals)", amount_f64);
+                    
+                    if amount_f64 > 0.001 && amount_f64 < 1000.0 {
+                        Some(amount_f64.min(10.0))
+                    } else {
+                        info!("🔍 Amount out of range: {}", amount_f64);
+                        None
+                    }
+                } else {
+                    info!("🔍 Insufficient data for swapTokensForExactTokens");
+                    None
+                }
+            }
+            
+            _ => {
+                info!("🔍 Unknown function selector: {} - using gas-based estimation", selector_hex);
+                // Unknown function - try to estimate based on gas usage
+                let gas_limit = victim_tx.gas_limit.to::<u64>() as f64;
+                if gas_limit > 200_000.0 {
+                    info!("🔍 High gas usage ({}) - estimated large swap: 0.1 ETH", gas_limit);
+                    Some(0.1)
+                } else {
+                    info!("🔍 Low gas usage ({}) - estimated small swap: 0.02 ETH", gas_limit);
+                    Some(0.02)
+                }
+            }
         }
     }
 
