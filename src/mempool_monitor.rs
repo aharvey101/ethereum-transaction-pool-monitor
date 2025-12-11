@@ -10,9 +10,13 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+// Import for dynamic pool discovery
+use crate::dynamic_pool_discovery::{DynamicPoolDiscovery, DynamicDiscoveryConfig};
 
 /// Configuration for mempool monitoring
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,12 +106,13 @@ impl Default for MempoolConfig {
 
 /// Real-time mempool monitor
 pub struct MempoolMonitor {
-    eth_client: EthereumClient,
-    pool_db: PoolDatabase,
+    eth_client: std::sync::Arc<EthereumClient>,
+    pool_db: std::sync::Arc<PoolDatabase>,
     config: MempoolConfig,
     known_pools: HashSet<Address>,
     opportunity_sender: mpsc::UnboundedSender<MempoolOpportunity>,
     stats: MonitorStats,
+    dynamic_discovery: Option<std::sync::Arc<DynamicPoolDiscovery>>,
 }
 
 #[derive(Debug, Default)]
@@ -136,12 +141,32 @@ impl MempoolMonitor {
         let pool_db = PoolDatabase::new(db_path)?;
         info!("✅ Pool database loaded");
 
+        // Wrap clients in Arc for sharing with discovery service
+        let eth_client_arc = std::sync::Arc::new(eth_client);
+        let pool_db_arc = std::sync::Arc::new(pool_db);
+
+        // Initialize dynamic pool discovery service
+        let discovery_config = DynamicDiscoveryConfig::default();
+        let dynamic_discovery = DynamicPoolDiscovery::new(
+            eth_client_arc.clone(),
+            discovery_config,
+        ).await?;
+        let dynamic_discovery = std::sync::Arc::new(dynamic_discovery);
+        info!("✅ Dynamic pool discovery service initialized");
+
+        // Set the discovery service on the pool database to enable dynamic discovery
+        let mut pool_db_mut = Arc::try_unwrap(pool_db_arc)
+            .map_err(|_| anyhow::anyhow!("PoolDatabase Arc has multiple references"))?;
+        pool_db_mut.set_dynamic_discovery(dynamic_discovery.clone());
+        let pool_db_arc = Arc::new(pool_db_mut);
+        info!("✅ Dynamic discovery integrated with PoolDatabase");
+
         // Initialize enhanced simulator (temporarily bypassed to avoid hang)
         info!("✅ Enhanced sandwich simulator ready (bypassed for now)");
 
         // Pre-load known pool addresses for fast filtering
         debug!("📚 Loading known pool addresses for mempool filtering...");
-        let known_pools = Self::load_known_pools(&pool_db).await?;
+        let known_pools = Self::load_known_pools(&pool_db_arc).await?;
         info!(
             "✅ Loaded {} known pool addresses for mempool filtering",
             known_pools.len()
@@ -150,12 +175,13 @@ impl MempoolMonitor {
         let (opportunity_sender, opportunity_receiver) = mpsc::unbounded_channel();
 
         let monitor = Self {
-            eth_client,
-            pool_db,
+            eth_client: eth_client_arc,
+            pool_db: pool_db_arc,
             config,
             known_pools,
             opportunity_sender,
             stats: MonitorStats::default(),
+            dynamic_discovery: Some(dynamic_discovery),
         };
 
         Ok((monitor, opportunity_receiver))
@@ -622,7 +648,7 @@ impl MempoolMonitor {
             recommended_frontrun_amount: victim_tx.value * U256::from(2),
             estimated_profit_eth: 0.0, // Will be calculated by simulation
             risk_score: 30,
-            gas_cost_estimate: U256::from(500_000u64) * U256::from(20_000_000_000u64),
+            gas_cost_estimate: U256::from(400_000u64) * U256::from(500_000_000u64), // 400k gas * 0.5 gwei
         })
     }
 
@@ -717,10 +743,10 @@ impl MempoolMonitor {
             info!("🔍 Not enough data to read path offset");
             return Ok(None);
         }
-        
+
         let path_offset = u32::from_be_bytes([
             params_data[64 + 28],
-            params_data[64 + 29], 
+            params_data[64 + 29],
             params_data[64 + 30],
             params_data[64 + 31],
         ]) as usize;
@@ -755,10 +781,13 @@ impl MempoolMonitor {
         // Validate we have enough data for the tokens
         let tokens_start = path_offset + 32;
         let required_length = tokens_start + (path_length * 32);
-        
+
         if required_length > params_data.len() {
-            info!("🔍 Not enough data for token array: need {}, have {}", 
-                  required_length, params_data.len());
+            info!(
+                "🔍 Not enough data for token array: need {}, have {}",
+                required_length,
+                params_data.len()
+            );
             return Ok(None);
         }
 
@@ -830,10 +859,13 @@ impl MempoolMonitor {
         // Validate we have enough data for the tokens
         let tokens_start = path_offset + 32;
         let required_length = tokens_start + (path_length * 32);
-        
+
         if required_length > params_data.len() {
-            info!("🔍 ETH swap not enough data for token array: need {}, have {}", 
-                  required_length, params_data.len());
+            info!(
+                "🔍 ETH swap not enough data for token array: need {}, have {}",
+                required_length,
+                params_data.len()
+            );
             return Ok(None);
         }
 
@@ -852,7 +884,7 @@ impl MempoolMonitor {
         self.find_pool_for_token_pair(token0, token1).await
     }
 
-    /// Find pool for token pair
+    /// Find pool for token pair with enhanced discovery
     async fn find_pool_for_token_pair(
         &self,
         token0: Address,
@@ -863,6 +895,7 @@ impl MempoolMonitor {
             token0, token1
         );
 
+        // First try the static database lookup
         let pools = self
             .pool_db
             .find_pool_by_tokens(&format!("{:#x}", token0), &format!("{:#x}", token1))?;
@@ -870,11 +903,23 @@ impl MempoolMonitor {
         if let Some(pool) = pools.first() {
             let pool_address = pool.address.parse::<Address>()?;
             info!("🎯 Found target pool: {} ({})", pool_address, pool.protocol);
-            Ok(Some(pool_address))
-        } else {
-            info!("🔍 No pool found for token pair {} -> {}", token0, token1);
-            Ok(None)
+            return Ok(Some(pool_address));
         }
+
+        // If no pool found in static database, try dynamic discovery
+        if let Some(discovery_service) = &self.dynamic_discovery {
+            info!("🔍 No pool found in database, attempting dynamic discovery for {} <-> {}", token0, token1);
+            
+            let discovered_pools = discovery_service.discover_pools(token0, token1).await?;
+            
+            if let Some(discovered_pool) = discovered_pools.first() {
+                info!("✨ Dynamic discovery found pool: {} ({})", discovered_pool.address, discovered_pool.protocol);
+                return Ok(Some(discovered_pool.address));
+            }
+        }
+
+        info!("🔍 No pool found for token pair {} -> {} after all discovery methods", token0, token1);
+        Ok(None)
     }
 
     /// Run basic sandwich simulation without EnhancedSandwichSimulator
@@ -905,7 +950,7 @@ impl MempoolMonitor {
         let estimated_profit = frontrun_amount * price_impact;
         let gas_cost = 0.003; // Estimate 3 transactions * ~100k gas each * 30 gwei
         let net_profit = estimated_profit - gas_cost;
-
+        info!("💰 Net profit: {}", net_profit);
         // Only proceed if profitable
         if net_profit <= 0.0 {
             return Ok(None);
@@ -918,7 +963,7 @@ impl MempoolMonitor {
             success: true,
             profit_eth: estimated_profit,
             profit_usd: estimated_profit * 3200.0, // Assume ETH price
-            gas_used: 340000,
+            gas_used: 300_000, // More realistic estimate for analysis
             gas_cost_eth: gas_cost,
             net_profit_eth: net_profit,
             net_profit_usd: net_profit * 3200.0,
@@ -967,9 +1012,9 @@ impl MempoolMonitor {
         } else {
             pool_state.reserve0.to::<u64>() as f64 / 1e18
         };
-        
+
         let reserve1 = if pool_state.reserve1 > U256::from(u64::MAX) {
-            // If reserves are too large, use a scaled down version  
+            // If reserves are too large, use a scaled down version
             (pool_state.reserve1 / U256::from(1e9 as u64)).to::<u64>() as f64 / 1e9
         } else {
             pool_state.reserve1.to::<u64>() as f64 / 1e18

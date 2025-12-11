@@ -1,6 +1,6 @@
-use anyhow::Result;
 use crate::pool_db::PoolDatabase;
 use crate::transaction_decoder::SwapInfo;
+use anyhow::Result;
 use serde_json::{self, json};
 use std::sync::Arc;
 use tracing::debug;
@@ -9,10 +9,10 @@ use tracing::debug;
 #[derive(Clone, Debug, PartialEq)]
 pub enum DefiActivityType {
     None,
-    TokenContract,      // USDT, USDC, WETH, etc.
-    Stablecoin,        // USDT, USDC, DAI, BUSD - subset of tokens
-    DexPool,           // Uniswap pools, etc.
-    DexRouter,         // Uniswap router, 1inch, etc.
+    TokenContract, // USDT, USDC, WETH, etc.
+    Stablecoin,    // USDT, USDC, DAI, BUSD - subset of tokens
+    DexPool,       // Uniswap pools, etc.
+    DexRouter,     // Uniswap router, 1inch, etc.
 }
 
 /// Represents a pending transaction from the mempool
@@ -49,36 +49,51 @@ pub struct MempoolTransaction {
 }
 
 impl MempoolTransaction {
-    pub fn from_value(value: &serde_json::Value, pool_db: &PoolDatabase, chain_id: u32) -> Result<Self> {
+    pub fn from_value(
+        value: &serde_json::Value,
+        pool_db: &PoolDatabase,
+        chain_id: u32,
+    ) -> Result<Self> {
         let from = value["from"].as_str().unwrap_or("N/A").to_string();
         let to_opt = value["to"].as_str().map(|s| s.to_string());
         let value_hex = value["value"].as_str().unwrap_or("0x0").to_string();
         let gas_price_hex = value["gasPrice"].as_str().unwrap_or("0x0").to_string();
-        
+
         // Parse nonce from hex to u64
         let nonce_hex = value["nonce"].as_str().unwrap_or("0x0");
         let nonce = parse_hex_u64(nonce_hex).unwrap_or(0);
 
         let value_eth = format_value(&value_hex);
         let gas_price_gwei = format_gas_price(&gas_price_hex);
-        
+
         // Pre-compute numeric values for fast sorting (eliminates repeated string parsing)
         let value_f64 = value_eth.parse::<f64>().unwrap_or(0.0);
         let gas_price_f64 = gas_price_gwei.parse::<f64>().unwrap_or(0.0);
-        
+
         // Determine DeFi activity type and set is_dex flag
-        let (is_dex, defi_activity_type) = to_opt.as_ref().map_or((false, DefiActivityType::None), |addr| {
-            let activity_type = pool_db.get_defi_activity_type(addr, chain_id).unwrap_or(DefiActivityType::None);
-            let is_defi = activity_type != DefiActivityType::None;
-            if is_defi {
-                tracing::debug!("DeFi transaction detected - Address: {}, Type: {:?}, Value: {}, Gas: {}", addr, activity_type, value_eth, gas_price_gwei);
-            }
-            (is_defi, activity_type)
-        });
-        
+        let (is_dex, defi_activity_type) =
+            to_opt
+                .as_ref()
+                .map_or((false, DefiActivityType::None), |addr| {
+                    let activity_type = pool_db
+                        .get_defi_activity_type(addr, chain_id)
+                        .unwrap_or(DefiActivityType::None);
+                    let is_defi = activity_type != DefiActivityType::None;
+                    if is_defi {
+                        tracing::debug!(
+                        "DeFi transaction detected - Address: {}, Type: {:?}, Value: {}, Gas: {}",
+                        addr,
+                        activity_type,
+                        value_eth,
+                        gas_price_gwei
+                    );
+                    }
+                    (is_defi, activity_type)
+                });
+
         // Extract transaction data for potential decoding
         let tx_data = value["input"].as_str().unwrap_or("0x").to_string();
-        
+
         // Decode transaction based on type: swaps for routers, transfers for tokens
         let swap_info = if is_dex {
             if let Some(to_addr) = &to_opt {
@@ -178,7 +193,11 @@ impl EthereumClient {
     }
 
     /// Fetch pending transactions - tries txpool_content first, then filter-based approach
-    pub async fn get_pending_transactions(&self, pool_db: &PoolDatabase, chain_id: u32) -> Result<Vec<MempoolTransaction>> {
+    pub async fn get_pending_transactions(
+        &self,
+        pool_db: &PoolDatabase,
+        chain_id: u32,
+    ) -> Result<Vec<MempoolTransaction>> {
         // Try txpool_content first (works with Reth, Geth, Erigon)
         match self.get_pending_from_txpool(pool_db, chain_id).await {
             Ok(txs) => {
@@ -196,7 +215,11 @@ impl EthereumClient {
     }
 
     /// Get pending transactions from txpool_content (most direct method)
-    async fn get_pending_from_txpool(&self, pool_db: &PoolDatabase, chain_id: u32) -> Result<Vec<MempoolTransaction>> {
+    async fn get_pending_from_txpool(
+        &self,
+        pool_db: &PoolDatabase,
+        chain_id: u32,
+    ) -> Result<Vec<MempoolTransaction>> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "txpool_content",
@@ -204,7 +227,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -243,7 +267,11 @@ impl EthereumClient {
     }
 
     /// Fallback: Get pending transactions using filter-based approach
-    async fn get_pending_from_filter(&self, pool_db: &PoolDatabase, chain_id: u32) -> Result<Vec<MempoolTransaction>> {
+    async fn get_pending_from_filter(
+        &self,
+        pool_db: &PoolDatabase,
+        chain_id: u32,
+    ) -> Result<Vec<MempoolTransaction>> {
         // Create filter
         let filter_request = json!({
             "jsonrpc": "2.0",
@@ -252,7 +280,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let filter_response = self.http_client
+        let filter_response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&filter_request)
             .send()
@@ -277,7 +306,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let changes_response = self.http_client
+        let changes_response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&changes_request)
             .send()
@@ -312,7 +342,12 @@ impl EthereumClient {
     }
 
     /// Fetch full transaction details by hash
-    pub async fn get_transaction_by_hash(&self, hash: &str, pool_db: &PoolDatabase, chain_id: u32) -> Result<MempoolTransaction> {
+    pub async fn get_transaction_by_hash(
+        &self,
+        hash: &str,
+        pool_db: &PoolDatabase,
+        chain_id: u32,
+    ) -> Result<MempoolTransaction> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionByHash",
@@ -320,7 +355,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -340,42 +376,45 @@ impl EthereumClient {
     }
 
     /// Get pending transactions with pagination support, sorted by likelihood of being in next block
-    pub async fn get_pending_transactions_paginated(&self, 
-        pool_db: &PoolDatabase, 
+    pub async fn get_pending_transactions_paginated(
+        &self,
+        pool_db: &PoolDatabase,
         chain_id: u32,
         offset: usize,
-        limit: usize
+        limit: usize,
     ) -> Result<Vec<MempoolTransaction>> {
         // Get raw pending transactions without expensive processing
         let raw_txs = self.get_pending_transactions_raw().await?;
-        
+
         // Sort by gas price (parsing hex directly for speed)
-        let mut tx_with_gas: Vec<_> = raw_txs.into_iter()
+        let mut tx_with_gas: Vec<_> = raw_txs
+            .into_iter()
             .filter_map(|tx| {
                 let gas_price_hex = tx.get("gasPrice")?.as_str()?;
-                let gas_price_wei = u64::from_str_radix(gas_price_hex.trim_start_matches("0x"), 16).ok()?;
+                let gas_price_wei =
+                    u64::from_str_radix(gas_price_hex.trim_start_matches("0x"), 16).ok()?;
                 Some((tx, gas_price_wei))
             })
             .collect();
-        
+
         // Sort by gas price descending (highest first)
         tx_with_gas.sort_by(|a, b| b.1.cmp(&a.1));
-        
+
         // Apply pagination and then process only the transactions we need
         let start = offset;
         let end = (offset + limit).min(tx_with_gas.len());
-        
+
         if start >= tx_with_gas.len() {
             return Ok(Vec::new());
         }
-        
+
         let mut result = Vec::new();
         for (tx_value, _gas_price) in &tx_with_gas[start..end] {
             if let Ok(tx) = MempoolTransaction::from_value(tx_value, pool_db, chain_id) {
                 result.push(tx);
             }
         }
-        
+
         Ok(result)
     }
 
@@ -406,7 +445,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -452,7 +492,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let filter_response = self.http_client
+        let filter_response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&filter_request)
             .send()
@@ -477,7 +518,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let changes_response = self.http_client
+        let changes_response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&changes_request)
             .send()
@@ -520,7 +562,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -548,14 +591,15 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
             .await?;
 
         let response_body: serde_json::Value = response.json().await?;
-        
+
         if let Some(error) = response_body.get("error") {
             anyhow::bail!("JSON-RPC Error: {}", error);
         }
@@ -563,22 +607,112 @@ impl EthereumClient {
         let gas_price_hex = response_body["result"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid gas price response"))?;
-            
-        let gas_price = alloy_primitives::U256::from_str_radix(
-            gas_price_hex.trim_start_matches("0x"), 
-            16
-        )?;
-        
+
+        let gas_price =
+            alloy_primitives::U256::from_str_radix(gas_price_hex.trim_start_matches("0x"), 16)?;
+
         Ok(gas_price)
     }
 
-    /// Add missing get_block_number method for compatibility  
+    /// Get current effective gas price using EIP-1559 base fee + priority fee
+    /// This is more accurate than the legacy eth_gasPrice for modern Ethereum
+    pub async fn get_current_gas_price_wei(&self) -> Result<u64> {
+        // Get base fee from latest block (EIP-1559)
+        let base_fee_gwei = self.get_current_base_fee().await.unwrap_or(0.1); // fallback to 0.1 gwei
+        
+        // Add a small priority fee (0.1 gwei) to ensure inclusion
+        let priority_fee_gwei = 0.1;
+        let total_gas_price_gwei = base_fee_gwei + priority_fee_gwei;
+        
+        // Convert to wei (1 gwei = 1e9 wei)
+        let gas_price_wei = (total_gas_price_gwei * 1_000_000_000.0) as u64;
+        
+        Ok(gas_price_wei)
+    }
+
+    /// Get current gas price with fallback to legacy method
+    pub async fn get_current_gas_price(&self) -> Result<alloy_primitives::U256> {
+        // Try EIP-1559 method first
+        match self.get_current_gas_price_wei().await {
+            Ok(gas_price_wei) => Ok(alloy_primitives::U256::from(gas_price_wei)),
+            Err(_) => {
+                // Fallback to legacy gas price method
+                self.get_gas_price().await
+            }
+        }
+    }
+
+    /// Test and display current gas price information
+    pub async fn test_gas_prices(&self) -> Result<()> {
+        println!("🔍 Testing Dynamic Gas Price Fetching");
+        
+        // Test legacy gas price
+        println!("\n📊 Legacy Gas Price (eth_gasPrice):");
+        match self.get_gas_price().await {
+            Ok(gas_price) => {
+                let gas_price_gwei = gas_price.to_string().parse::<u128>().unwrap_or(0) as f64 / 1e9;
+                println!("   Legacy: {:.4} gwei ({} wei)", gas_price_gwei, gas_price);
+            }
+            Err(e) => println!("   Error: {}", e),
+        }
+        
+        // Test current base fee
+        println!("\n📊 Current Base Fee (EIP-1559):");
+        match self.get_current_base_fee().await {
+            Ok(base_fee) => {
+                println!("   Base Fee: {:.4} gwei", base_fee);
+            }
+            Err(e) => println!("   Error: {}", e),
+        }
+        
+        // Test our new combined gas price
+        println!("\n📊 New Dynamic Gas Price:");
+        match self.get_current_gas_price_wei().await {
+            Ok(gas_price_wei) => {
+                let gas_price_gwei = gas_price_wei as f64 / 1e9;
+                println!("   Dynamic: {:.4} gwei ({} wei)", gas_price_gwei, gas_price_wei);
+            }
+            Err(e) => println!("   Error: {}", e),
+        }
+        
+        // Calculate cost estimates with different scenarios
+        println!("\n💰 Gas Cost Estimates (OLD vs NEW):");
+        let current_gas_price = self.get_current_gas_price_wei().await.unwrap_or(500_000_000); // 0.5 gwei fallback
+        let old_gas_price = 20_000_000_000u64; // 20 gwei
+        
+        let scenarios = [
+            ("Simple swap", 150_000u64),
+            ("Complex swap", 180_000u64), 
+            ("Sandwich attack", 400_000u64),
+            ("OLD estimate", 550_000u64),
+        ];
+        
+        for (name, gas_limit) in scenarios.iter() {
+            let old_cost_wei = gas_limit * old_gas_price;
+            let new_cost_wei = gas_limit * current_gas_price;
+            let old_cost_eth = old_cost_wei as f64 / 1e18;
+            let new_cost_eth = new_cost_wei as f64 / 1e18;
+            let savings = old_cost_eth - new_cost_eth;
+            let percent_savings = (savings / old_cost_eth) * 100.0;
+            
+            println!("   {}: OLD {:.6} ETH vs NEW {:.6} ETH (Save {:.6} ETH, {:.1}%)", 
+                    name, old_cost_eth, new_cost_eth, savings, percent_savings);
+        }
+        
+        println!("\n✅ Gas price testing completed!");
+        Ok(())
+    }
+
+    /// Add missing get_block_number method for compatibility
     pub async fn get_block_number(&self) -> Result<u64> {
         self.get_latest_block_number().await
     }
 
     /// Get transaction receipt by hash
-    pub async fn get_transaction_receipt(&self, tx_hash: &str) -> Result<Option<serde_json::Value>> {
+    pub async fn get_transaction_receipt(
+        &self,
+        tx_hash: &str,
+    ) -> Result<Option<serde_json::Value>> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionReceipt",
@@ -586,7 +720,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -599,35 +734,38 @@ impl EthereumClient {
         }
 
         let result = response_body.get("result");
-        
+
         match result {
-            Some(receipt_data) if !receipt_data.is_null() => {
-                Ok(Some(receipt_data.clone()))
-            }
+            Some(receipt_data) if !receipt_data.is_null() => Ok(Some(receipt_data.clone())),
             _ => Ok(None), // Transaction not found or null (still pending)
         }
     }
 
     /// Subscribe to pending transactions via WebSocket for real-time mempool monitoring
-    pub async fn subscribe_pending_transactions(&self) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>> {
+    pub async fn subscribe_pending_transactions(
+        &self,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>> {
         // Convert HTTP URL to WebSocket URL and change port from 8545 to 8547
-        let mut ws_url = self.rpc_url.replace("http://", "ws://").replace("https://", "wss://");
-        
+        let mut ws_url = self
+            .rpc_url
+            .replace("http://", "ws://")
+            .replace("https://", "wss://");
+
         // Change port from 8545 to 8547 for WebSocket
         if ws_url.contains(":8545") {
             ws_url = ws_url.replace(":8545", ":8547");
         }
-        
+
         debug!("📡 WebSocket URL: {}", ws_url);
-        
+
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        
+
         // Use tokio-tungstenite for reliable WebSocket connection
-        use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
         use futures_util::{SinkExt, StreamExt};
-        
+        use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+
         let url = url::Url::parse(&ws_url)?;
-        
+
         tokio::spawn(async move {
             loop {
                 // Attempt WebSocket connection with retry logic
@@ -635,7 +773,7 @@ impl EthereumClient {
                     Ok((ws_stream, _)) => {
                         debug!("✅ WebSocket connected successfully");
                         let (mut write, mut read) = ws_stream.split();
-                        
+
                         // Subscribe to pending transactions
                         let subscribe_msg = serde_json::json!({
                             "jsonrpc": "2.0",
@@ -643,24 +781,28 @@ impl EthereumClient {
                             "params": ["newPendingTransactions"],
                             "id": 1
                         });
-                        
+
                         if let Err(e) = write.send(Message::Text(subscribe_msg.to_string())).await {
                             debug!("❌ Failed to send subscription: {}", e);
                             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                             continue;
                         }
-                        
+
                         // Process incoming messages
                         while let Some(message) = read.next().await {
                             match message {
                                 Ok(Message::Text(text)) => {
-                                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    if let Ok(json) =
+                                        serde_json::from_str::<serde_json::Value>(&text)
+                                    {
                                         // Handle subscription confirmation
-                                        if json.get("result").is_some() && json.get("id") == Some(&serde_json::json!(1)) {
+                                        if json.get("result").is_some()
+                                            && json.get("id") == Some(&serde_json::json!(1))
+                                        {
                                             debug!("✅ Subscription confirmed");
                                             continue;
                                         }
-                                        
+
                                         // Handle new pending transaction notifications
                                         if let Some(params) = json.get("params") {
                                             if let Some(result) = params.get("result") {
@@ -690,18 +832,21 @@ impl EthereumClient {
                         debug!("❌ WebSocket connection failed: {}", e);
                     }
                 }
-                
+
                 // Wait before reconnecting
                 debug!("🔄 Reconnecting WebSocket in 5 seconds...");
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
             }
         });
-        
+
         Ok(rx)
     }
 
     /// Get full transaction details by hash using alloy types
-    pub async fn get_transaction_details(&self, tx_hash: &str) -> Result<Option<alloy::rpc::types::Transaction>> {
+    pub async fn get_transaction_details(
+        &self,
+        tx_hash: &str,
+    ) -> Result<Option<alloy::rpc::types::Transaction>> {
         let request_body = json!({
             "jsonrpc": "2.0",
             "method": "eth_getTransactionByHash",
@@ -709,7 +854,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -722,7 +868,7 @@ impl EthereumClient {
         }
 
         let result = response_body.get("result");
-        
+
         match result {
             Some(tx_data) if !tx_data.is_null() => {
                 // Parse the transaction data into alloy Transaction type
@@ -742,7 +888,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -772,7 +919,8 @@ impl EthereumClient {
             "id": 1
         });
 
-        let response = self.http_client
+        let response = self
+            .http_client
             .post(&self.rpc_url)
             .json(&request_body)
             .send()
@@ -805,12 +953,14 @@ impl EthereumClient {
         target_tx_gas_price: alloy_primitives::U256,
         aggressive: bool,
     ) -> Result<alloy_primitives::U256> {
-        let target_gwei = target_tx_gas_price.to_string().parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
-        
+        let target_gwei =
+            target_tx_gas_price.to_string().parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
+
         let frontrun_gwei = if aggressive {
             // Aggressive: 20% higher than victim or current gas price + 5 gwei, whichever is higher
             let current_gas_price = self.get_gas_price().await?;
-            let current_gwei = current_gas_price.to_string().parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
+            let current_gwei =
+                current_gas_price.to_string().parse::<u64>().unwrap_or(0) as f64 / 1_000_000_000.0;
             (target_gwei * 1.2).max(current_gwei + 5.0)
         } else {
             // Conservative: 5% higher than victim
@@ -819,5 +969,35 @@ impl EthereumClient {
 
         let frontrun_wei = (frontrun_gwei * 1_000_000_000.0) as u64;
         Ok(alloy_primitives::U256::from(frontrun_wei))
+    }
+
+    /// Get the contract code at a given address
+    pub async fn get_code(&self, address: alloy_primitives::Address) -> Result<String> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getCode",
+            "params": [format!("{:#x}", address), "latest"],
+            "id": 1
+        });
+
+        let response = self
+            .http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let code = response_body
+            .get("result")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| anyhow::anyhow!("No code result"))?;
+
+        Ok(code.to_string())
     }
 }

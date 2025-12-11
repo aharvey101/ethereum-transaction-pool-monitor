@@ -422,7 +422,7 @@ impl MevBundleBuilder {
 
         // Simulate the sandwich attack logic
         let estimated_profit = opportunity.estimated_profit_eth;
-        let estimated_gas = 600_000u64; // Typical gas for sandwich
+        let estimated_gas = 400_000u64; // More realistic gas for sandwich
 
         info!(
             "📊 Simulation results: profit={:.4} ETH, gas={}",
@@ -534,7 +534,7 @@ impl MevBundleBuilder {
                 recommended_frontrun_amount: U256::from(1_000_000_000_000_000_000u64), // 1 ETH
                 estimated_profit_eth: 0.05,
                 risk_score: 20,                                             // Low risk
-                gas_cost_estimate: U256::from(300_000 * 20_000_000_000u64), // 300k gas * 20 gwei
+                gas_cost_estimate: U256::from(250_000 * 500_000_000u64), // 250k gas * 0.5 gwei
             },
             estimated_profit_eth: 0.05,
             confidence_score: 0.8,
@@ -895,7 +895,7 @@ fn create_dummy_mempool_tx() -> MempoolTransaction {
         to: Address::ZERO,
         value: U256::from(1_000_000_000_000_000_000u64), // 1 ETH
         gas_limit: U256::from(21_000),
-        gas_price: U256::from(20_000_000_000u64), // 20 gwei
+        gas_price: U256::from(500_000_000u64), // 0.5 gwei
         nonce: 1,
         data: vec![],
         timestamp: std::time::SystemTime::now()

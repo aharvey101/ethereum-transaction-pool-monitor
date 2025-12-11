@@ -620,7 +620,7 @@ impl MevBotRunner {
             if submission_result.submitted {
                 stats_lock.bundles_submitted += 1;
                 stats_lock.total_profit_eth += submission_result.profit_eth;
-                stats_lock.total_gas_fees_eth += submission_result.total_gas_used as f64 * 20e-9; // Estimate gas cost
+                stats_lock.total_gas_fees_eth += submission_result.total_gas_used as f64 * 0.5e-9; // Estimate gas cost at 0.5 gwei
 
                 info!(
                     "Bundle submitted for block {} | Hash: {:?} | Profit: {:.4} ETH | Gas: {}",
