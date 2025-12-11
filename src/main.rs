@@ -114,14 +114,6 @@ enum Commands {
         #[arg(long)]
         enable_flashbots: bool,
 
-        /// Use direct mempool submission instead of Flashbots (like arboo)
-        #[arg(long)]
-        direct_mempool: bool,
-
-        /// Private key for direct mempool submission (hex format)
-        #[arg(long)]
-        private_key: Option<String>,
-
         /// Simulation only mode (no real transactions)
         #[arg(long)]
         simulation_only: bool,
@@ -182,8 +174,6 @@ async fn main() -> Result<()> {
             min_profit,
             max_gas_price,
             enable_flashbots,
-            direct_mempool,
-            private_key,
             simulation_only,
         }) => {
             println!("🤖 Continuous MEV Bot Runner");
@@ -194,8 +184,6 @@ async fn main() -> Result<()> {
                 min_profit,
                 max_gas_price,
                 enable_flashbots,
-                direct_mempool,
-                private_key,
                 simulation_only,
             )
             .await?;
@@ -857,8 +845,6 @@ async fn run_mev_bot(
     min_profit: f64,
     max_gas_price_gwei: u64,
     enable_flashbots: bool,
-    direct_mempool: bool,
-    private_key: Option<String>,
     simulation_only: bool,
 ) -> Result<()> {
     use eth_client::EthereumClient;
@@ -892,21 +878,14 @@ async fn run_mev_bot(
         bundle_timeout_seconds: 15,
         stats_interval_seconds: 60, // Default 1 minute
         max_opportunities_per_block: 3,
-        enable_flashbots,
-        direct_mempool,
-        aggressive_gas: false, // Default conservative
-        prefer_flash_loans: true, // Prioritize Flashbots + flash loans for capital efficiency
-        signing_key: private_key.clone(),
+        enable_flashbots: enable_flashbots && !simulation_only, // Only enable if not simulation
+        signing_key: std::env::var("PRIVATE_KEY").ok(), // Get from environment
         sandwich_contract_address: Some("0x79E2a11cD852479c91C63660F69A9b1e7bA5dfE8".to_string()), // Deployed contract
     };
 
     // Determine execution method
-    let execution_mode = if enable_flashbots {
-        "Flashbots Bundle (Simulation Only)"
-    } else if direct_mempool && private_key.is_some() {
-        "Direct Mempool"
-    } else if simulation_only {
-        "Simulation Only"
+    let execution_mode = if enable_flashbots && !simulation_only {
+        "Flashbots + Flash Loans"
     } else {
         "Simulation Only"
     };

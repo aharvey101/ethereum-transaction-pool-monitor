@@ -36,9 +36,6 @@ pub struct BotConfig {
     pub stats_interval_seconds: u64,
     pub max_opportunities_per_block: usize,
     pub enable_flashbots: bool,
-    pub direct_mempool: bool, // Use direct mempool submission (like arboo)
-    pub aggressive_gas: bool, // Use aggressive gas pricing for MEV
-    pub prefer_flash_loans: bool, // Prioritize flash loans over wallet balance
     pub signing_key: Option<String>,
     pub sandwich_contract_address: Option<String>, // Deployed sandwich contract
 }
@@ -58,9 +55,6 @@ impl Default for BotConfig {
             stats_interval_seconds: 30,
             max_opportunities_per_block: 3,
             enable_flashbots: false, // Start with simulation mode
-            direct_mempool: false,   // Default to simulation
-            aggressive_gas: false,   // Conservative gas pricing by default
-            prefer_flash_loans: true, // Default to flash loans for capital efficiency
             signing_key: None,
             sandwich_contract_address: None,
         }
@@ -477,16 +471,6 @@ impl MevBotRunner {
     ) {
         let execution_method = if config.enable_flashbots {
             crate::mev_bundle_builder::ExecutionMethod::Flashbots
-        } else if config.direct_mempool {
-            if let Some(private_key) = &config.signing_key {
-                crate::mev_bundle_builder::ExecutionMethod::DirectMempool {
-                    private_key: private_key.clone(),
-                    aggressive_gas: config.aggressive_gas,
-                }
-            } else {
-                warn!("Direct mempool enabled but no private key provided, using simulation mode");
-                crate::mev_bundle_builder::ExecutionMethod::SimulationOnly
-            }
         } else {
             crate::mev_bundle_builder::ExecutionMethod::SimulationOnly
         };

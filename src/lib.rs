@@ -10,6 +10,7 @@ pub mod dex;
 pub mod enhanced_revm_simulator;
 pub mod eth_client;
 pub mod flash_loan_manager;
+pub mod flashbots_bundle_builder;
 pub mod graph_client;
 pub mod mempool_monitor;
 pub mod mev_bundle_builder;

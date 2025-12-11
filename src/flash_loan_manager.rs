@@ -51,7 +51,7 @@ pub struct FlashLoanResult {
 }
 
 /// Balancer V2 Flash Loan Manager
-#[allow(dead_code)]
+#[derive(Debug)]
 pub struct FlashLoanManager {
     vault_address: Address,
     weth_address: Address,
@@ -217,49 +217,29 @@ impl FlashLoanManager {
 
     /// Build Balancer V2 flash loan calldata
     fn build_flash_loan_calldata(&self, request: &FlashLoanRequest) -> Result<Bytes> {
-        // Balancer V2 flashLoan function signature:
-        // flashLoan(IFlashLoanRecipient recipient, address[] tokens, uint256[] amounts, bytes userData)
-
-        // For now, return a placeholder
-        // In production, this would use alloy-sol-types to properly encode the call
-        let calldata = format!(
-            "0xab9c4b5d{:064x}{:064x}{:064x}",
-            // recipient (our sandwich execution contract)
-            0u64, // placeholder
-            // tokens array offset
-            0u64,
-            // amounts array offset
-            request.amount.to::<u64>()
+        // This function is deprecated - flash loan calls are now handled by the atomic
+        // smart contract via FlashbotsBundleBuilder.
+        anyhow::bail!(
+            "Flash loan calldata generation is deprecated. \
+             Use FlashbotsBundleBuilder.build_sandwich_transaction() instead."
         );
-
-        Ok(Bytes::from(hex::decode(calldata.trim_start_matches("0x"))?))
     }
 
-    /// Submit flash loan transaction (placeholder implementation)
+    /// Submit flash loan transaction via Flashbots
     async fn submit_flash_loan_transaction(
         &self,
-        _eth_client: &crate::eth_client::EthereumClient,
-        _calldata: Bytes,
-        _max_gas_price: U256,
+        eth_client: &crate::eth_client::EthereumClient,
+        calldata: Bytes,
+        max_gas_price: U256,
     ) -> Result<FlashLoanResult> {
-        // Placeholder implementation
-        // In production, this would:
-        // 1. Build a Flashbots bundle with our flash loan transaction
-        // 2. Submit to Flashbots relay
-        // 3. Monitor for execution and calculate actual profit
+        info!("🏦 Executing flash loan transaction via Flashbots bundle");
 
-        warn!("⚠️  Flash loan execution is not yet implemented - returning mock success");
-
-        Ok(FlashLoanResult {
-            success: true,
-            profit_wei: U256::from(5000000000000000u64), // 0.005 ETH mock profit
-            gas_used: 350_000,
-            transaction_hash: Some(
-                "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
-            ),
-            execution_time_ms: 100,
-            error_message: None,
-        })
+        // This function is deprecated - flash loan execution now goes through
+        // FlashbotsBundleBuilder with atomic smart contract execution
+        anyhow::bail!(
+            "Flash loan execution must use FlashbotsBundleBuilder with smart contract. \
+             Use mev_bundle_builder.rs execute_flashbots_sandwich() instead."
+        );
     }
 
     /// Get available flash loan capacity for a token

@@ -5,6 +5,6 @@ libs = ["lib"]
 solc = "0.8.19"
 
 [rpc_endpoints]
-mainnet = "https://rpc.ankr.com/eth"
+mainnet = "http://192.168.0.14:8545"
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

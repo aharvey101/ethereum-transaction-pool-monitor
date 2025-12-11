@@ -64,7 +64,7 @@ impl Default for PoolSelectionCriteria {
                 "SushiSwap".to_string(),
             ],
             max_gas_price_gwei: 100.0,      // 100 gwei max gas price
-            min_profit_threshold_eth: 0.01, // 0.01 ETH minimum profit
+            min_profit_threshold_eth: 0.001, // 0.001 ETH default (should be overridden)
         }
     }
 }
