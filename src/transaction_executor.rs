@@ -758,6 +758,77 @@ impl DirectMempoolExecutor {
         .await
     }
 
+    /// Get account balance in wei
+    pub async fn get_balance(&self) -> Result<U256> {
+        let private_key = self
+            .private_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Private key required to get balance"))?;
+
+        let signer = PrivateKeySigner::from_str(private_key)
+            .map_err(|e| anyhow::anyhow!("Invalid private key format: {}", e))?;
+
+        let http_url = Url::from_str(&self.rpc_url)
+            .map_err(|e| anyhow::anyhow!("Invalid RPC URL format '{}': {}", self.rpc_url, e))?;
+
+        let provider = ProviderBuilder::new().on_http(http_url);
+        let from_address = signer.address();
+
+        let balance = provider
+            .get_balance(from_address)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get account balance: {}", e))?;
+
+        Ok(balance)
+    }
+
+    /// Get current network gas price in wei
+    pub async fn get_gas_price(&self) -> Result<u128> {
+        let http_url = Url::from_str(&self.rpc_url)
+            .map_err(|e| anyhow::anyhow!("Invalid RPC URL format '{}': {}", self.rpc_url, e))?;
+
+        let provider = ProviderBuilder::new().on_http(http_url);
+
+        let gas_price = provider
+            .get_gas_price()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get gas price: {}", e))?;
+
+        Ok(gas_price as u128)
+    }
+
+    /// Get current network base fee and priority fee (EIP-1559)
+    pub async fn get_fee_history(&self) -> Result<(u128, u128)> {
+        let http_url = Url::from_str(&self.rpc_url)
+            .map_err(|e| anyhow::anyhow!("Invalid RPC URL format '{}': {}", self.rpc_url, e))?;
+
+        let provider = ProviderBuilder::new().on_http(http_url);
+
+        // Get the latest block to check base fee
+        let latest_block = provider
+            .get_block_by_number(alloy::rpc::types::BlockNumberOrTag::Latest, alloy::rpc::types::BlockTransactionsKind::Hashes)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get latest block: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Latest block not found"))?;
+
+        let base_fee = latest_block.header.base_fee_per_gas.unwrap_or(0) as u128;
+        
+        // For priority fee, use a reasonable default (2 gwei) or get from network
+        let priority_fee = match provider.get_gas_price().await {
+            Ok(gas_price) => {
+                let total_gas = gas_price as u128;
+                if total_gas > base_fee {
+                    total_gas - base_fee // Priority fee = total - base
+                } else {
+                    2_000_000_000 // 2 gwei default
+                }
+            }
+            Err(_) => 2_000_000_000, // 2 gwei default
+        };
+
+        Ok((base_fee, priority_fee))
+    }
+
     /// Calculate profit from transaction receipt by analyzing swap events
     async fn calculate_profit_from_receipt(
         &self,

@@ -74,6 +74,7 @@ pub struct MempoolOpportunity {
     pub confidence_score: f32, // 0-1, how confident we are this will be profitable
     pub time_sensitivity: u64, // seconds until opportunity expires
     pub required_capital_eth: f64,
+    pub simulation_result: crate::enhanced_revm_simulator::EnhancedSandwichResult, // Full simulation data for transaction building
 }
 
 /// Configuration for mempool monitoring
@@ -490,6 +491,7 @@ impl MempoolMonitor {
             time_sensitivity: 12, // ~12 seconds before next block
             required_capital_eth: (simulation_result.frontrun_amount / U256::from(10u64.pow(18)))
                 .to::<u64>() as f64,
+            simulation_result,
         };
 
         Ok(Some(opportunity))
