@@ -89,15 +89,15 @@ pub struct MempoolConfig {
 impl Default for MempoolConfig {
     fn default() -> Self {
         Self {
-            min_tx_value_usd: 10_000.0,    // $10k minimum transaction size
-            max_gas_price_gwei: 100.0,      // 100 gwei max gas price
+            min_tx_value_usd: 10.0,          // $10 minimum transaction size (very low for testing)
+            max_gas_price_gwei: 200.0,       // 200 gwei max gas price (higher for testing)
             target_protocols: vec![
                 "UniswapV2".to_string(),
                 "UniswapV3".to_string(), 
                 "SushiSwap".to_string(),
             ],
-            min_profit_threshold_eth: 0.005, // 0.005 ETH minimum profit (after gas)
-            max_price_impact: 0.05,          // 5% maximum price impact
+            min_profit_threshold_eth: 0.0001, // 0.0001 ETH minimum profit (very low for testing)
+            max_price_impact: 0.05,           // 5% maximum price impact
             confidence_threshold: 0.7,       // 70% minimum confidence
         }
     }
@@ -483,17 +483,23 @@ impl MempoolMonitor {
         // Parse input data
         let input = Bytes::from_hex(&tx_details.data).unwrap_or_default();
         
+        // Estimate USD value (simplified)
+        let estimated_value_usd = eth_value * 2000.0; // Assume $2000 ETH
+        
         // Check if this is a DEX interaction (either direct pool or router)
         let is_dex = to_addr.map_or(false, |addr| {
             let addr_string = format!("{:#x}", addr); // Use hex format like 0x1234...
             let is_pool = self.known_pools.contains(&addr);
             let is_router = self.pool_db.is_dex_router(&addr_string);
-            debug!("🔍 Checking address: {} - Pool: {}, Router: {}", addr_string, is_pool, is_router);
+            
+            // Log every transaction with value > $1 for debugging
+            if estimated_value_usd > 1.0 {
+                info!("🔍 Transaction to: {} (${:.2}) - Pool: {}, Router: {}", 
+                     addr_string, estimated_value_usd, is_pool, is_router);
+            }
+            
             is_pool || is_router
         });
-        
-        // Estimate USD value (simplified)
-        let estimated_value_usd = eth_value * 2000.0; // Assume $2000 ETH
         
         let target_pool = if is_dex {
             // For direct pool interactions, use the to_addr
