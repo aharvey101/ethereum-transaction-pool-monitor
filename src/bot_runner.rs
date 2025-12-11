@@ -45,13 +45,13 @@ pub struct BotConfig {
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
-            min_value_usd: 1.0,                                // $1 minimum for testing
+            min_value_usd: 1.0, // $1 minimum for testing
             min_gas_price_gwei: 5.0,
-            max_gas_price_gwei: 200.0,                         // Increased for testing
-            confidence_threshold: 0.3,                         // Lower threshold for testing
+            max_gas_price_gwei: 200.0, // Increased for testing
+            confidence_threshold: 0.3, // Lower threshold for testing
             enable_websocket: true,
-            max_gas_price: U256::from(200_000_000_000_u64),   // 200 gwei for testing
-            min_profit_threshold: 0.0001,                      // 0.0001 ETH minimum profit for testing
+            max_gas_price: U256::from(200_000_000_000_u64), // 200 gwei for testing
+            min_profit_threshold: 0.0001,                   // 0.0001 ETH minimum profit for testing
             max_concurrent_bundles: 5,
             bundle_timeout_seconds: 10,
             stats_interval_seconds: 30,
@@ -689,4 +689,3 @@ mod tests {
         assert!(metrics.opportunities_per_hour >= 90.0); // ~100/hour
     }
 }
-
