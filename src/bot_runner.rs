@@ -45,7 +45,7 @@ pub struct BotConfig {
 impl Default for BotConfig {
     fn default() -> Self {
         Self {
-            min_value_usd: 10.0,                               // $10 minimum for testing
+            min_value_usd: 1.0,                                // $1 minimum for testing
             min_gas_price_gwei: 5.0,
             max_gas_price_gwei: 200.0,                         // Increased for testing
             confidence_threshold: 0.3,                         // Lower threshold for testing

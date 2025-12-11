@@ -89,7 +89,7 @@ pub struct MempoolConfig {
 impl Default for MempoolConfig {
     fn default() -> Self {
         Self {
-            min_tx_value_usd: 10.0,          // $10 minimum transaction size (very low for testing)
+            min_tx_value_usd: 1.0,           // $1 minimum transaction size (ultra low for testing)
             max_gas_price_gwei: 200.0,       // 200 gwei max gas price (higher for testing)
             target_protocols: vec![
                 "UniswapV2".to_string(),
@@ -281,8 +281,10 @@ impl MempoolMonitor {
         
         // Check if transaction meets our value threshold
         if mempool_tx.estimated_value_usd < self.config.min_tx_value_usd {
-            debug!("💸 Transaction value too low: ${:.0} < ${:.0}", 
-                mempool_tx.estimated_value_usd, self.config.min_tx_value_usd);
+            if mempool_tx.is_dex_interaction {
+                info!("💸 DEX transaction value too low: ${:.2} < ${:.2} - Hash: {}", 
+                    mempool_tx.estimated_value_usd, self.config.min_tx_value_usd, mempool_tx.hash);
+            }
             return Ok(());
         }
         

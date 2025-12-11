@@ -784,7 +784,7 @@ async fn run_mev_bot(
 
     // Configure bot
     let config = BotConfig {
-        min_value_usd: 10.0,                               // $10 minimum for testing
+        min_value_usd: 1.0,                                // $1 minimum for testing
         min_gas_price_gwei: 5.0,
         max_gas_price_gwei: max_gas_price_gwei as f64,
         confidence_threshold: 0.3,                         // Lower threshold for testing
