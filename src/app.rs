@@ -499,7 +499,7 @@ impl AppState {
         }
     }
 
-    /// Select previous transaction and auto-scroll to keep it visible  
+    /// Select previous transaction and auto-scroll to keep it visible
     pub fn select_previous(&mut self, max_rows: usize) {
         if self.transactions.is_empty() {
             return;

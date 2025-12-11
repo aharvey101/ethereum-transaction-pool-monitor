@@ -100,7 +100,7 @@ impl BackgroundTransactionUpdater {
                     {
                         Ok(transactions) => {
                             if block_changed {
-                                tracing::info!("Background: New block {} detected with {} pending transactions", 
+                                tracing::info!("Background: New block {} detected with {} pending transactions",
                                     current_block, transactions.len());
                                 let _ = tx.send(TransactionUpdateMessage::BlockChange {
                                     new_block_number: current_block,

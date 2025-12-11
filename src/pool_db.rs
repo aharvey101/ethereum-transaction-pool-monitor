@@ -190,7 +190,7 @@ impl PoolDatabase {
         let conn = self.conn.lock().unwrap();
         let result = conn
             .query_row(
-                "SELECT address, protocol, token0, token1, chain_id FROM pools 
+                "SELECT address, protocol, token0, token1, chain_id FROM pools
              WHERE LOWER(address) = ?1 AND chain_id = ?2",
                 params![&normalized, chain_id],
                 |row| {
@@ -212,7 +212,7 @@ impl PoolDatabase {
         let normalized = address.to_lowercase();
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address, protocol, token0, token1, chain_id FROM pools 
+            "SELECT address, protocol, token0, token1, chain_id FROM pools
              WHERE LOWER(address) = ?1",
         )?;
 
@@ -246,7 +246,7 @@ impl PoolDatabase {
     pub fn add_pool(&self, pool: &DexPool) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO pools (address, protocol, token0, token1, chain_id) 
+            "INSERT OR REPLACE INTO pools (address, protocol, token0, token1, chain_id)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 pool.address.to_lowercase(),
@@ -265,7 +265,7 @@ impl PoolDatabase {
         let tx = conn.transaction()?;
         for pool in pools {
             tx.execute(
-                "INSERT OR REPLACE INTO pools (address, protocol, token0, token1, chain_id) 
+                "INSERT OR REPLACE INTO pools (address, protocol, token0, token1, chain_id)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     pool.address.to_lowercase(),
@@ -285,7 +285,7 @@ impl PoolDatabase {
     pub fn get_pools_by_protocol(&self, protocol: &str, chain_id: u32) -> Result<Vec<DexPool>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address, protocol, token0, token1, chain_id FROM pools 
+            "SELECT address, protocol, token0, token1, chain_id FROM pools
              WHERE protocol = ?1 AND chain_id = ?2",
         )?;
         let pools = stmt
@@ -333,9 +333,9 @@ impl PoolDatabase {
     pub fn get_latest_pool_id(&self, protocol: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address FROM pools 
-             WHERE protocol = ?1 
-             ORDER BY address DESC 
+            "SELECT address FROM pools
+             WHERE protocol = ?1
+             ORDER BY address DESC
              LIMIT 1",
         )?;
 
@@ -473,8 +473,8 @@ impl PoolDatabase {
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address, protocol, token0, token1, chain_id 
-             FROM pools 
+            "SELECT address, protocol, token0, token1, chain_id
+             FROM pools
              WHERE (LOWER(token0) = ?1 AND LOWER(token1) = ?2)
                 OR (LOWER(token0) = ?2 AND LOWER(token1) = ?1)
              ORDER BY protocol ASC
@@ -504,8 +504,8 @@ impl PoolDatabase {
 
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT address, protocol, token0, token1, chain_id 
-             FROM pools 
+            "SELECT address, protocol, token0, token1, chain_id
+             FROM pools
              WHERE LOWER(address) = ?1
              LIMIT 1",
         )?;

@@ -18,7 +18,7 @@ pub struct GraphV2Pair {
     pub token1: GraphToken,
 }
 
-/// UniswapV3 Pool from The Graph  
+/// UniswapV3 Pool from The Graph
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GraphV3Pool {
     pub id: String,
@@ -89,7 +89,7 @@ pub struct SushiPairsResponse {
     pub liquidity_pools: Vec<GraphSushiPair>,
 }
 
-/// UniswapV3 pools response  
+/// UniswapV3 pools response
 #[derive(Debug, Serialize, Deserialize)]
 pub struct V3PoolsResponse {
     pub pools: Vec<GraphV3Pool>,
@@ -1331,7 +1331,7 @@ impl GraphClient {
         }
 
         let total_pools = v2_count + v3_count + v4_count + sushi_count + curve_count;
-        println!("🎉 Database collection status: {} V2 + {} V3 + {} V4 + {} Sushi + {} Curve = {} total pools", 
+        println!("🎉 Database collection status: {} V2 + {} V3 + {} V4 + {} Sushi + {} Curve = {} total pools",
                  v2_count, v3_count, v4_count, sushi_count, curve_count, total_pools);
 
         Ok((v2_count, v3_count, v4_count, sushi_count, curve_count))
@@ -1381,7 +1381,7 @@ impl GraphClient {
             println!("✅ Well within free tier limits!");
         }
 
-        println!("🎉 Database collection status: {} V2 pairs + {} V3 pools + {} V4 pools = {} total pools", 
+        println!("🎉 Database collection status: {} V2 pairs + {} V3 pools + {} V4 pools = {} total pools",
                  v2_count, v3_count, v4_count, v2_count + v3_count + v4_count);
 
         Ok((v2_count, v3_count, v4_count))

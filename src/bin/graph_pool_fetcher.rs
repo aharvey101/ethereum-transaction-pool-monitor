@@ -6,7 +6,7 @@
 //! Features:
 //! - Fetches ~100,000+ UniswapV2 pairs
 //! - Fetches ~50,000+ UniswapV3 pools
-//! - Fetches ~17,000+ UniswapV4 pools  
+//! - Fetches ~17,000+ UniswapV4 pools
 //! - Fetches Curve liquidity pools
 //! - Uses optimized queries (well within 100,000 free tier)
 //! - Progress tracking and query usage monitoring
