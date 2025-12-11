@@ -412,7 +412,7 @@ impl MempoolMonitor {
         };
 
         // Always log simulation results for debugging
-        info!("📊 Simulation Result - Success: {}, Profit: {:.4} ETH, Gas Cost: {:.4} ETH, Net: {:.4} ETH", 
+        info!("📊 Simulation Result - Success: {}, Profit: {:.4} ETH, Gas Cost: {:.4} ETH, Net: {:.4} ETH",
             simulation_result.success,
             simulation_result.profit_eth,
             simulation_result.gas_cost_eth,
@@ -701,7 +701,7 @@ impl MempoolMonitor {
         }
     }
 
-    /// Parse Uniswap V2 swap (5 parameters)
+    /// Parse Uniswap V2 swap (5 parameters: amountIn, amountOutMin, path, to, deadline)
     async fn parse_uniswap_v2_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
         if params_data.len() < 160 {
             info!(
@@ -711,17 +711,24 @@ impl MempoolMonitor {
             return Ok(None);
         }
 
-        // Get path array offset from 3rd parameter (bytes 64-67, last 4 bytes)
+        // Path is 3rd parameter (index 2) - offset is at bytes 64-95 (32-byte word)
+        // Read the offset value from the correct location
+        if params_data.len() < 96 {
+            info!("🔍 Not enough data to read path offset");
+            return Ok(None);
+        }
+        
         let path_offset = u32::from_be_bytes([
             params_data[64 + 28],
-            params_data[64 + 29],
+            params_data[64 + 29], 
             params_data[64 + 30],
             params_data[64 + 31],
         ]) as usize;
 
         info!("🔍 Path offset: {}", path_offset);
 
-        if path_offset + 64 > params_data.len() {
+        // Validate offset is within bounds
+        if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
             info!(
                 "🔍 Path offset out of bounds: offset={}, data_len={}",
                 path_offset,
@@ -730,7 +737,7 @@ impl MempoolMonitor {
             return Ok(None);
         }
 
-        // Get path array length
+        // Read array length (first 32 bytes at offset)
         let path_length = u32::from_be_bytes([
             params_data[path_offset + 28],
             params_data[path_offset + 29],
@@ -738,19 +745,26 @@ impl MempoolMonitor {
             params_data[path_offset + 31],
         ]) as usize;
 
+        info!("🔍 Path length: {}", path_length);
+
         if path_length < 2 {
             info!("🔍 Path too short: {}", path_length);
             return Ok(None);
         }
 
-        // Extract first two token addresses
-        let token0_start = path_offset + 32 + 12;
-        let token1_start = path_offset + 32 + 32 + 12;
-
-        if token1_start + 20 > params_data.len() {
-            info!("🔍 Not enough data for tokens");
+        // Validate we have enough data for the tokens
+        let tokens_start = path_offset + 32;
+        let required_length = tokens_start + (path_length * 32);
+        
+        if required_length > params_data.len() {
+            info!("🔍 Not enough data for token array: need {}, have {}", 
+                  required_length, params_data.len());
             return Ok(None);
         }
+
+        // Extract first and last token addresses (each address is 32 bytes with 12 byte padding)
+        let token0_start = tokens_start + 12; // Skip padding
+        let token1_start = tokens_start + 32 + 12; // Next address + skip padding
 
         let token0_bytes = &params_data[token0_start..token0_start + 20];
         let token1_bytes = &params_data[token1_start..token1_start + 20];
@@ -763,7 +777,7 @@ impl MempoolMonitor {
         self.find_pool_for_token_pair(token0, token1).await
     }
 
-    /// Parse Uniswap V2 ETH swap (4 parameters)
+    /// Parse Uniswap V2 ETH swap (4 parameters: amountOutMin, path, to, deadline)
     async fn parse_uniswap_v2_eth_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
         if params_data.len() < 128 {
             info!(
@@ -773,7 +787,12 @@ impl MempoolMonitor {
             return Ok(None);
         }
 
-        // Get path array offset from 2nd parameter (bytes 32-35, last 4 bytes)
+        // Path is 2nd parameter (index 1) - offset is at bytes 32-63
+        if params_data.len() < 64 {
+            info!("🔍 Not enough data to read ETH swap path offset");
+            return Ok(None);
+        }
+
         let path_offset = u32::from_be_bytes([
             params_data[32 + 28],
             params_data[32 + 29],
@@ -783,7 +802,8 @@ impl MempoolMonitor {
 
         info!("🔍 ETH swap path offset: {}", path_offset);
 
-        if path_offset + 64 > params_data.len() {
+        // Validate offset is within bounds
+        if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
             info!(
                 "🔍 ETH swap path offset out of bounds: offset={}, data_len={}",
                 path_offset,
@@ -792,7 +812,7 @@ impl MempoolMonitor {
             return Ok(None);
         }
 
-        // Get path array length
+        // Read array length (first 32 bytes at offset)
         let path_length = u32::from_be_bytes([
             params_data[path_offset + 28],
             params_data[path_offset + 29],
@@ -800,19 +820,26 @@ impl MempoolMonitor {
             params_data[path_offset + 31],
         ]) as usize;
 
+        info!("🔍 ETH swap path length: {}", path_length);
+
         if path_length < 2 {
             info!("🔍 ETH swap path too short: {}", path_length);
             return Ok(None);
         }
 
-        // Extract first two token addresses
-        let token0_start = path_offset + 32 + 12;
-        let token1_start = path_offset + 32 + 32 + 12;
-
-        if token1_start + 20 > params_data.len() {
-            info!("🔍 ETH swap not enough data for tokens");
+        // Validate we have enough data for the tokens
+        let tokens_start = path_offset + 32;
+        let required_length = tokens_start + (path_length * 32);
+        
+        if required_length > params_data.len() {
+            info!("🔍 ETH swap not enough data for token array: need {}, have {}", 
+                  required_length, params_data.len());
             return Ok(None);
         }
+
+        // Extract first and second token addresses
+        let token0_start = tokens_start + 12; // Skip padding
+        let token1_start = tokens_start + 32 + 12; // Next address + skip padding
 
         let token0_bytes = &params_data[token0_start..token0_start + 20];
         let token1_bytes = &params_data[token1_start..token1_start + 20];
@@ -820,7 +847,7 @@ impl MempoolMonitor {
         let token0 = Address::from_slice(token0_bytes);
         let token1 = Address::from_slice(token1_bytes);
 
-        info!("🔍 Extracted ETH swap token pair: {} -> {}", token0, token1);
+        info!("🔍 ETH swap extracted token pair: {} -> {}", token0, token1);
 
         self.find_pool_for_token_pair(token0, token1).await
     }
@@ -933,9 +960,20 @@ impl MempoolMonitor {
         pool_state: &crate::sandwich_pool_integration::PoolState,
         trade_amount: f64,
     ) -> Result<f64> {
-        // Convert reserves to f64 for calculation
-        let reserve0 = pool_state.reserve0.to::<u64>() as f64 / 1e18;
-        let reserve1 = pool_state.reserve1.to::<u64>() as f64 / 1e18;
+        // Convert reserves to f64 for calculation (handle overflow safely)
+        let reserve0 = if pool_state.reserve0 > U256::from(u64::MAX) {
+            // If reserves are too large, use a scaled down version
+            (pool_state.reserve0 / U256::from(1e9 as u64)).to::<u64>() as f64 / 1e9
+        } else {
+            pool_state.reserve0.to::<u64>() as f64 / 1e18
+        };
+        
+        let reserve1 = if pool_state.reserve1 > U256::from(u64::MAX) {
+            // If reserves are too large, use a scaled down version  
+            (pool_state.reserve1 / U256::from(1e9 as u64)).to::<u64>() as f64 / 1e9
+        } else {
+            pool_state.reserve1.to::<u64>() as f64 / 1e18
+        };
 
         // Basic constant product formula: x * y = k
         // Price impact = (trade_amount * reserve1) / (reserve0 * (reserve0 + trade_amount))
@@ -945,4 +983,3 @@ impl MempoolMonitor {
         Ok(price_impact.max(0.001).min(0.10))
     }
 }
-
