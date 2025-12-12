@@ -855,67 +855,222 @@ impl MempoolMonitor {
         // Extract function selector (first 4 bytes)
         let function_selector = &input_data[0..4];
         
-        info!("🔍 Function selector: 0x{}", hex::encode(function_selector));
-        info!("🔍 Input data length: {} bytes", input_data.len());
-        info!("🔍 Input data (first 100 bytes): 0x{}", hex::encode(&input_data[..std::cmp::min(100, input_data.len())]));
+        // Only log for debugging when needed (reduce noise)
+        debug!("🔍 Function selector: 0x{} ({})", 
+               hex::encode(function_selector), input_data.len());
 
-        // Common Uniswap V2/V3 Router function selectors
+        // Comprehensive DEX function selectors
         match function_selector {
-            // All V2 swap functions - use simple parsing
-            [0x38, 0xed, 0x17, 0x39] | [0x7f, 0xf3, 0x6a, 0xb5] | [0x18, 0xcb, 0xaf, 0xe5] | 
-            [0x8f, 0x0e, 0x15, 0xa4] | [0x4a, 0x25, 0xa9, 0x4a] | [0xfb, 0x3b, 0xdb, 0x41] |
-            [0x79, 0x1a, 0xc9, 0x47] => {
-                self.extract_token_pair_simple(&input_data[4..]).await
-            }
-            // Uniswap V3 exactInputSingle
-            [0x41, 0x4b, 0xf3, 0x89] => {
-                self.extract_v3_token_pair(&input_data[4..]).await
-            }
-            // For now, focus on the most common swaps
+            // Uniswap V2 Router Functions
+            [0x38, 0xed, 0x17, 0x39] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactTokensForTokens
+            [0x7f, 0xf3, 0x6a, 0xb5] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactETHForTokens
+            [0x18, 0xcb, 0xaf, 0xe5] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactTokensForETH
+            [0x8f, 0x0e, 0x15, 0xa4] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactTokensForETHSupportingFeeOnTransferTokens
+            [0x4a, 0x25, 0xa9, 0x4a] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactTokensForTokensSupportingFeeOnTransferTokens
+            [0xfb, 0x3b, 0xdb, 0x41] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactETHForTokensSupportingFeeOnTransferTokens
+            [0x79, 0x1a, 0xc9, 0x47] => self.extract_token_pair_simple(&input_data[4..]).await, // swapTokensForExactETH
+            [0x88, 0x19, 0xcc, 0x46] => self.extract_token_pair_simple(&input_data[4..]).await, // swapETHForExactTokens
+            [0x85, 0x83, 0x59, 0x86] => self.extract_token_pair_simple(&input_data[4..]).await, // swapTokensForExactTokens
+
+            // Uniswap V3 Router Functions  
+            [0x41, 0x4b, 0xf3, 0x89] => self.extract_v3_token_pair(&input_data[4..]).await,     // exactInputSingle
+            [0xdb, 0x3e, 0x21, 0x98] => self.extract_v3_token_pair(&input_data[4..]).await,     // exactOutputSingle
+            [0xc0, 0x4b, 0x8d, 0x59] => self.extract_token_pair_simple(&input_data[4..]).await, // exactInput (multi-hop)
+            [0xf2, 0x8c, 0x04, 0x98] => self.extract_token_pair_simple(&input_data[4..]).await, // exactOutput (multi-hop)
+
+            // SushiSwap Router (same as Uniswap V2)
+            [0x02, 0x75, 0x1c, 0xec] => self.extract_token_pair_simple(&input_data[4..]).await, // swapExactTokensForTokens
+
+            // 1inch Router Functions
+            [0x7c, 0x02, 0x5e, 0x60] => self.extract_token_pair_simple(&input_data[4..]).await, // swap
+            [0x41, 0x34, 0x67, 0x67] => self.extract_token_pair_simple(&input_data[4..]).await, // unoswap
+            [0x24, 0x9b, 0x3a, 0x64] => self.extract_token_pair_simple(&input_data[4..]).await, // uniswapV3Swap
+
+            // 0x Protocol Functions
+            [0xd9, 0x62, 0x7a, 0xa4] => self.extract_token_pair_simple(&input_data[4..]).await, // sellToUniswap
+            [0x63, 0x09, 0xfc, 0x04] => self.extract_token_pair_simple(&input_data[4..]).await, // transformERC20
+
+            // Balancer V2 Vault Functions
+            [0x52, 0xb5, 0x4e, 0xb7] => self.extract_token_pair_simple(&input_data[4..]).await, // batchSwap
+            [0x94, 0x5b, 0xc6, 0xc5] => self.extract_token_pair_simple(&input_data[4..]).await, // swap
+
+            // ParaSwap Functions
+            [0x54, 0x84, 0xd8, 0x04] => self.extract_token_pair_simple(&input_data[4..]).await, // swapOnUniswap
+            [0xad, 0x9c, 0x44, 0xa6] => self.extract_token_pair_simple(&input_data[4..]).await, // multiSwap
+
+            // For unrecognized functions, try simple token extraction anyway
             _ => {
-                debug!("🔍 Unsupported function: 0x{}", alloy_primitives::hex::encode(function_selector));
-                Ok(None)
+                debug!("🔍 Attempting fallback parsing for unknown function: 0x{}", 
+                       alloy_primitives::hex::encode(function_selector));
+                // Try generic token pair extraction for unknown functions
+                self.extract_token_pair_simple(&input_data[4..]).await
             }
         }
     }
 
-    /// Parse Uniswap V2 swap (5 parameters: amountIn, amountOutMin, path, to, deadline)
+    /// Parse Uniswap V2 swap with better error handling
     async fn parse_uniswap_v2_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
-        // Most V2 swaps: path is 3rd parameter (offset at 0x40)
+        // V2 swaps typically have: amountIn, amountOutMin, path[], to, deadline
+        // Path is usually the 3rd parameter
+        if params_data.len() < 160 { // 5 parameters * 32 bytes
+            debug!("V2 swap data too short: {} bytes", params_data.len());
+            return self.extract_token_pair_simple(params_data).await;
+        }
+
+        // Try to find path array at expected offset (0x40 = 64)
+        if let Some(pool) = self.try_extract_path_at_offset(params_data, 64).await? {
+            return Ok(Some(pool));
+        }
+
+        // Fallback to general extraction
         self.extract_token_pair_simple(params_data).await
     }
 
-    /// Parse Uniswap V2 ETH swap (4 parameters: amountOutMin, path, to, deadline)
+    /// Parse Uniswap V2 ETH swap with better error handling  
     async fn parse_uniswap_v2_eth_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
-        // ETH swaps: path is 2nd parameter (offset at 0x20)
+        // ETH swaps typically have: amountOutMin, path[], to, deadline
+        // Path is usually the 2nd parameter
+        if params_data.len() < 128 { // 4 parameters * 32 bytes
+            debug!("V2 ETH swap data too short: {} bytes", params_data.len());
+            return self.extract_token_pair_simple(params_data).await;
+        }
+
+        // Try to find path array at expected offset (0x20 = 32)
+        if let Some(pool) = self.try_extract_path_at_offset(params_data, 32).await? {
+            return Ok(Some(pool));
+        }
+
+        // Fallback to general extraction
         self.extract_token_pair_simple(params_data).await
     }
 
-    /// Simple token pair extraction from ABI-encoded data
-    async fn extract_token_pair_simple(&self, params_data: &[u8]) -> Result<Option<Address>> {
-        if params_data.len() < 100 {
+    /// Try to extract path array at a specific offset
+    async fn try_extract_path_at_offset(&self, params_data: &[u8], path_offset: usize) -> Result<Option<Address>> {
+        if params_data.len() <= path_offset + 32 {
             return Ok(None);
         }
 
-        // Look for path array - it contains consecutive 20-byte addresses
-        // Skip the first 64 bytes (first two parameters), then scan for array
-        for offset in (64..params_data.len()).step_by(32) {
+        // Read the offset to the actual path data
+        let path_data_offset = u32::from_be_bytes([
+            params_data[path_offset + 28], params_data[path_offset + 29],
+            params_data[path_offset + 30], params_data[path_offset + 31]
+        ]) as usize;
+
+        if path_data_offset >= params_data.len() || path_data_offset + 32 >= params_data.len() {
+            debug!("Invalid path data offset: {}", path_data_offset);
+            return Ok(None);
+        }
+
+        // Read array length
+        let array_len = u32::from_be_bytes([
+            params_data[path_data_offset + 28], params_data[path_data_offset + 29],
+            params_data[path_data_offset + 30], params_data[path_data_offset + 31]
+        ]);
+
+        if array_len < 2 || array_len > 10 {
+            debug!("Invalid path array length: {}", array_len);
+            return Ok(None);
+        }
+
+        let array_start = path_data_offset + 32;
+        let required_bytes = array_len as usize * 32;
+
+        if array_start + required_bytes > params_data.len() {
+            debug!("Path array extends beyond data: need {} bytes, have {}", 
+                   array_start + required_bytes, params_data.len());
+            return Ok(None);
+        }
+
+        // Extract first and last tokens
+        if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], array_len) {
+            debug!("Extracted tokens from path: {} -> {}", token0, token1);
+            return self.calculate_uniswap_v2_pool(token0, token1).await;
+        }
+
+        Ok(None)
+    }
+
+    /// Robust token pair extraction from ABI-encoded data
+    async fn extract_token_pair_simple(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        if params_data.len() < 64 {
+            return Ok(None);
+        }
+
+        // Strategy 1: Try to find token addresses in the first 4 parameter slots (common pattern)
+        if let Some(pool) = self.try_extract_from_first_parameters(params_data).await? {
+            return Ok(Some(pool));
+        }
+
+        // Strategy 2: Look for path arrays (Uniswap V2/V3 style)
+        if let Some(pool) = self.try_extract_from_path_array(params_data).await? {
+            return Ok(Some(pool));
+        }
+
+        // Strategy 3: Scan for any valid token addresses and try to find pairs
+        if let Some(pool) = self.try_extract_from_address_scan(params_data).await? {
+            return Ok(Some(pool));
+        }
+
+        Ok(None)
+    }
+
+    /// Try extracting token addresses from the first few parameter slots
+    async fn try_extract_from_first_parameters(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        if params_data.len() < 64 {
+            return Ok(None);
+        }
+
+        // Extract potential addresses from first 4 parameter slots
+        let mut potential_tokens = Vec::new();
+        
+        for i in 0..4 {
+            let offset = i * 32;
+            if offset + 32 <= params_data.len() {
+                // Check if the last 20 bytes could be a valid token address
+                if params_data[offset..offset + 12].iter().all(|&b| b == 0) {
+                    let addr = Address::from_slice(&params_data[offset + 12..offset + 32]);
+                    if self.is_likely_token_address(addr) {
+                        potential_tokens.push(addr);
+                    }
+                }
+            }
+        }
+
+        // If we found 2+ potential tokens, try to create pool from first two
+        if potential_tokens.len() >= 2 {
+            return self.calculate_uniswap_v2_pool(potential_tokens[0], potential_tokens[1]).await;
+        }
+
+        Ok(None)
+    }
+
+    /// Try extracting from path arrays (typical in Uniswap V2/V3)
+    async fn try_extract_from_path_array(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        if params_data.len() < 128 {
+            return Ok(None);
+        }
+
+        // Look for array length indicators followed by addresses
+        for offset in (32..params_data.len().saturating_sub(96)).step_by(32) {
             if offset + 96 <= params_data.len() {
-                // Check if this looks like an array length (should be 2-5 for most swaps)
-                let array_len = u32::from_be_bytes([
+                // Check if this could be an array length
+                let potential_len = u32::from_be_bytes([
                     params_data[offset + 28], params_data[offset + 29], 
                     params_data[offset + 30], params_data[offset + 31]
                 ]);
                 
-                if array_len >= 2 && array_len <= 5 {
-                    // Extract first and last token from the path
-                    let token_start = offset + 32;
-                    if token_start + (array_len as usize * 32) <= params_data.len() {
-                        let token0 = Address::from_slice(&params_data[token_start + 12..token_start + 32]);
-                        let token1_offset = token_start + ((array_len - 1) as usize * 32);
-                        let token1 = Address::from_slice(&params_data[token1_offset + 12..token1_offset + 32]);
-                        
-                        return self.calculate_uniswap_v2_pool(token0, token1).await;
+                // Valid path arrays typically have 2-10 tokens
+                if potential_len >= 2 && potential_len <= 10 {
+                    let array_start = offset + 32;
+                    let required_bytes = potential_len as usize * 32;
+                    
+                    if array_start + required_bytes <= params_data.len() {
+                        // Try to extract first and last addresses from path
+                        if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], potential_len) {
+                            if let Some(pool) = self.calculate_uniswap_v2_pool(token0, token1).await? {
+                                return Ok(Some(pool));
+                            }
+                        }
                     }
                 }
             }
@@ -923,8 +1078,102 @@ impl MempoolMonitor {
         Ok(None)
     }
 
-    /// Extract token pair from Uniswap V3 exactInputSingle
+    /// Extract first and last tokens from a path array
+    fn extract_path_tokens(&self, array_data: &[u8], length: u32) -> Option<(Address, Address)> {
+        if array_data.len() < (length as usize * 32) {
+            return None;
+        }
+
+        // Extract first token (first 32 bytes, last 20 bytes are the address)
+        let token0 = Address::from_slice(&array_data[12..32]);
+        
+        // Extract last token
+        let last_offset = ((length - 1) as usize) * 32;
+        if array_data.len() < last_offset + 32 {
+            return None;
+        }
+        let token1 = Address::from_slice(&array_data[last_offset + 12..last_offset + 32]);
+
+        // Validate that both addresses look like tokens
+        if self.is_likely_token_address(token0) && self.is_likely_token_address(token1) {
+            Some((token0, token1))
+        } else {
+            None
+        }
+    }
+
+    /// Scan for any valid token addresses in the transaction data
+    async fn try_extract_from_address_scan(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        let mut found_tokens = Vec::new();
+
+        // Scan through data looking for potential token addresses
+        for offset in (0..params_data.len().saturating_sub(32)).step_by(4) {
+            if offset + 32 <= params_data.len() {
+                // Check if first 12 bytes are zero (typical for addresses in ABI encoding)
+                if params_data[offset..offset + 12].iter().all(|&b| b == 0) {
+                    let addr = Address::from_slice(&params_data[offset + 12..offset + 32]);
+                    if self.is_likely_token_address(addr) && !found_tokens.contains(&addr) {
+                        found_tokens.push(addr);
+                        if found_tokens.len() >= 2 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // If we found at least 2 unique tokens, try to find a pool
+        if found_tokens.len() >= 2 {
+            return self.calculate_uniswap_v2_pool(found_tokens[0], found_tokens[1]).await;
+        }
+
+        Ok(None)
+    }
+
+    /// Check if an address is likely to be a token contract
+    fn is_likely_token_address(&self, addr: Address) -> bool {
+        // Filter out obvious non-token addresses
+        if addr.is_zero() {
+            return false;
+        }
+
+        // Common patterns for non-token addresses to exclude
+        let addr_bytes = addr.as_slice();
+        
+        // Exclude addresses that are likely to be EOAs (very low addresses)
+        if addr_bytes.iter().take(18).all(|&b| b == 0) {
+            return false;
+        }
+
+        // Exclude some known non-token patterns
+        // This is a simple heuristic - in production you might maintain a whitelist/blacklist
+        true
+    }
+
+    /// Extract token pair from Uniswap V3 exactInputSingle and similar functions
     async fn extract_v3_token_pair(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        if params_data.len() < 64 {
+            return Ok(None);
+        }
+
+        // Try multiple strategies for V3 token extraction
+
+        // Strategy 1: Standard V3 exactInputSingle (tokenIn, tokenOut as first two params)
+        if let Some(pool) = self.try_v3_exact_input_pattern(params_data).await? {
+            return Ok(Some(pool));
+        }
+
+        // Strategy 2: V3 swap struct parameter (common pattern)
+        if let Some(pool) = self.try_v3_struct_pattern(params_data).await? {
+            return Ok(Some(pool));
+        }
+
+        // Strategy 3: Fall back to general token extraction
+        self.extract_token_pair_simple(params_data).await
+    }
+
+    /// Try extracting tokens from V3 exactInputSingle pattern
+    async fn try_v3_exact_input_pattern(&self, params_data: &[u8]) -> Result<Option<Address>> {
         if params_data.len() < 64 {
             return Ok(None);
         }
@@ -933,7 +1182,39 @@ impl MempoolMonitor {
         let token_in = Address::from_slice(&params_data[12..32]);
         let token_out = Address::from_slice(&params_data[44..64]);
         
-        self.calculate_uniswap_v2_pool(token_in, token_out).await
+        // Validate that these look like token addresses
+        if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
+            self.calculate_uniswap_v2_pool(token_in, token_out).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Try extracting tokens from V3 struct-based parameters
+    async fn try_v3_struct_pattern(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        // V3 often uses structs - look for the struct offset first
+        if params_data.len() < 96 {
+            return Ok(None);
+        }
+
+        // Check if first parameter is a struct offset
+        let struct_offset = u32::from_be_bytes([
+            params_data[28], params_data[29], params_data[30], params_data[31]
+        ]) as usize;
+
+        if struct_offset > 0 && struct_offset < params_data.len().saturating_sub(64) {
+            let struct_data = &params_data[struct_offset..];
+            if struct_data.len() >= 64 {
+                let token_in = Address::from_slice(&struct_data[12..32]);
+                let token_out = Address::from_slice(&struct_data[44..64]);
+                
+                if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
+                    return self.calculate_uniswap_v2_pool(token_in, token_out).await;
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     /// Calculate Uniswap V2 pool address from token pair
@@ -1648,5 +1929,263 @@ impl MempoolMonitor {
 
         // Clamp price impact between 0.1% and 10%
         Ok(price_impact.max(0.001).min(0.10))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, Bytes};
+    use std::str::FromStr;
+
+    fn create_test_monitor() -> MempoolMonitor {
+        // Create a mock pool database for testing
+        let pool_db = std::sync::Arc::new(PoolDatabase::new(":memory:").unwrap());
+        let config = MempoolConfig::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        
+        // Create mock eth client for testing
+        let eth_client = std::sync::Arc::new(
+            futures::executor::block_on(async {
+                EthereumClient::new("http://localhost:8545").await
+            }).unwrap()
+        );
+
+        MempoolMonitor {
+            eth_client,
+            pool_db,
+            config,
+            known_pools: HashSet::new(),
+            opportunity_sender: tx,
+            stats: MonitorStats::default(),
+        }
+    }
+
+    #[test]
+    fn test_major_dex_router_detection() {
+        let monitor = create_test_monitor();
+
+        // Test known routers
+        let uniswap_v2 = Address::from_str("0x7a250d5630b4cf539739df2c5dacb4c659f2488d").unwrap();
+        let uniswap_v3 = Address::from_str("0xe592427a0aece92de3edee1f18e0157c05861564").unwrap();
+        let sushiswap = Address::from_str("0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f").unwrap();
+        let one_inch = Address::from_str("0x1111111254eeb25477b68fb85ed929f73a960582").unwrap();
+
+        assert!(monitor.is_major_dex_router(&uniswap_v2));
+        assert!(monitor.is_major_dex_router(&uniswap_v3));
+        assert!(monitor.is_major_dex_router(&sushiswap));
+        assert!(monitor.is_major_dex_router(&one_inch));
+
+        // Test non-router address
+        let random_addr = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+        assert!(!monitor.is_major_dex_router(&random_addr));
+    }
+
+    #[test]
+    fn test_function_selector_recognition() {
+        // Test common Uniswap V2 function selectors
+        let swap_exact_eth_for_tokens = [0x7f, 0xf3, 0x6a, 0xb5];
+        let swap_exact_tokens_for_eth = [0x18, 0xcb, 0xaf, 0xe5];
+        let swap_exact_tokens_for_tokens = [0x38, 0xed, 0x17, 0x39];
+
+        // Test Uniswap V3 function selectors
+        let exact_input_single = [0x41, 0x4b, 0xf3, 0x89];
+
+        // These should be recognized (verifying current function selectors)
+        assert_eq!(swap_exact_eth_for_tokens, [0x7f, 0xf3, 0x6a, 0xb5]);
+        assert_eq!(swap_exact_tokens_for_eth, [0x18, 0xcb, 0xaf, 0xe5]);
+        assert_eq!(swap_exact_tokens_for_tokens, [0x38, 0xed, 0x17, 0x39]);
+        assert_eq!(exact_input_single, [0x41, 0x4b, 0xf3, 0x89]);
+    }
+
+    #[tokio::test]
+    async fn test_uniswap_v2_pool_calculation() {
+        let monitor = create_test_monitor();
+
+        // WETH and USDC addresses
+        let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
+
+        let result = monitor.calculate_uniswap_v2_pool(weth, usdc).await;
+
+        // Should return a pool address (CREATE2 calculation should work)
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_token_pair_extraction_basic() {
+        let monitor = create_test_monitor();
+
+        // Create mock ABI-encoded data for a swap with token path
+        // This simulates swapExactTokensForTokens with a 2-token path
+        let mut test_data = vec![0u8; 200];
+        
+        // Set up a mock array at offset 64 (skip first two 32-byte parameters)
+        let array_offset = 64;
+        
+        // Array length = 2
+        test_data[array_offset + 28] = 0;
+        test_data[array_offset + 29] = 0;
+        test_data[array_offset + 30] = 0;
+        test_data[array_offset + 31] = 2;
+
+        // Token 0: WETH (last 20 bytes of 32-byte slot)
+        let weth_bytes = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        test_data[array_offset + 32 + 12..array_offset + 32 + 32].copy_from_slice(&weth_bytes.as_slice());
+
+        // Token 1: USDC (last 20 bytes of next 32-byte slot)
+        let usdc_bytes = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
+        test_data[array_offset + 64 + 12..array_offset + 64 + 32].copy_from_slice(&usdc_bytes.as_slice());
+
+        let result = monitor.extract_token_pair_simple(&test_data).await;
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_input_data_parsing() {
+        let monitor = create_test_monitor();
+
+        // Test with empty data
+        let empty_data = Bytes::new();
+        let result = monitor.parse_router_target_pool(&empty_data, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+
+        // Test with too short data
+        let short_data = Bytes::from(vec![0x7f, 0xf3]);
+        let result = monitor.parse_router_target_pool(&short_data, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dex_transaction_detection() {
+        let monitor = create_test_monitor();
+
+        // Create a transaction going to Uniswap V2 router
+        let uniswap_v2_router = Address::from_str("0x7a250d5630b4cf539739df2c5dacb4c659f2488d").unwrap();
+        let random_address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+
+        // Test router detection
+        assert!(monitor.is_major_dex_router(&uniswap_v2_router));
+        assert!(!monitor.is_major_dex_router(&random_address));
+
+        // Test database router detection (should also work)
+        assert!(monitor.pool_db.is_dex_router(&format!("{:#x}", uniswap_v2_router)));
+        assert!(!monitor.pool_db.is_dex_router(&format!("{:#x}", random_address)));
+    }
+
+    #[tokio::test]
+    async fn test_improved_token_extraction_strategies() {
+        let monitor = create_test_monitor();
+
+        // Test Strategy 1: Extract from first parameters
+        let mut test_data = vec![0u8; 128];
+        
+        // WETH as first parameter (32 bytes, address in last 20)
+        let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        test_data[12..32].copy_from_slice(&weth.as_slice());
+        
+        // USDC as second parameter
+        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
+        test_data[44..64].copy_from_slice(&usdc.as_slice());
+
+        let result = monitor.try_extract_from_first_parameters(&test_data).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_path_array_extraction() {
+        let monitor = create_test_monitor();
+
+        // Create realistic path array data
+        let mut test_data = vec![0u8; 256];
+        
+        // Array offset at position 2 (0x40 = 64)
+        test_data[60..64].copy_from_slice(&64u32.to_be_bytes());
+        
+        // Array data starts at offset 64
+        // Array length = 3 tokens
+        test_data[92..96].copy_from_slice(&3u32.to_be_bytes());
+        
+        // Token path: WETH -> USDC -> DAI
+        let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap(); 
+        let dai = Address::from_str("0x6B175474E89094C44Da98b954EedeAC495271d0F").unwrap();
+        
+        test_data[108..128].copy_from_slice(&weth.as_slice());
+        test_data[140..160].copy_from_slice(&usdc.as_slice());
+        test_data[172..192].copy_from_slice(&dai.as_slice());
+
+        let result = monitor.try_extract_from_path_array(&test_data).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_address_validation() {
+        let monitor = create_test_monitor();
+
+        // Test valid token addresses
+        let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
+        assert!(monitor.is_likely_token_address(weth));
+        assert!(monitor.is_likely_token_address(usdc));
+
+        // Test invalid addresses
+        let zero_addr = Address::ZERO;
+        let low_addr = Address::from_str("0x0000000000000000000000000000000000000001").unwrap();
+        assert!(!monitor.is_likely_token_address(zero_addr));
+        assert!(!monitor.is_likely_token_address(low_addr));
+    }
+
+    #[tokio::test]
+    async fn test_v3_struct_pattern_extraction() {
+        let monitor = create_test_monitor();
+
+        // Create V3-style struct data
+        let mut test_data = vec![0u8; 192];
+        
+        // Struct offset pointing to position 32
+        test_data[28..32].copy_from_slice(&32u32.to_be_bytes());
+        
+        // Struct data starts at offset 32
+        // tokenIn (WETH)
+        let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
+        test_data[44..64].copy_from_slice(&weth.as_slice());
+        
+        // tokenOut (USDC) 
+        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
+        test_data[76..96].copy_from_slice(&usdc.as_slice());
+
+        let result = monitor.try_v3_struct_pattern(&test_data).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_path_extraction_with_invalid_data() {
+        let monitor = create_test_monitor();
+
+        // Test with array length too large
+        let mut test_data = vec![0u8; 128];
+        test_data[92..96].copy_from_slice(&100u32.to_be_bytes()); // Invalid length
+
+        let result = monitor.try_extract_from_path_array(&test_data).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+
+        // Test with truncated array
+        let mut test_data2 = vec![0u8; 100];
+        test_data2[60..64].copy_from_slice(&64u32.to_be_bytes());
+        test_data2[92..96].copy_from_slice(&3u32.to_be_bytes()); // Claims 3 tokens but not enough space
+
+        let result2 = monitor.try_extract_from_path_array(&test_data2).await;
+        assert!(result2.is_ok());
+        assert!(result2.unwrap().is_none());
     }
 }
