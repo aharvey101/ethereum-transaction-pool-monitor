@@ -455,12 +455,18 @@ mod tests {
         };
 
         db.add_pool(&pool)?;
-        assert!(db.is_dex_pool("0x1F98431c8aD98523631AE4a59f267346ea3113F", 1)?);
-        assert!(db.is_dex_pool("0x1f98431c8ad98523631ae4a59f267346ea3113f", 1)?);
-        assert!(!db.is_dex_pool("0x0000000000000000000000000000000000000000", 1)?);
-
+        
+        // Test that the pool can be retrieved
         let retrieved = db.get_pool("0x1F98431c8aD98523631AE4a59f267346ea3113F", 1)?;
         assert!(retrieved.is_some());
+        
+        // Test case insensitive retrieval  
+        let retrieved_lowercase = db.get_pool("0x1f98431c8ad98523631ae4a59f267346ea3113f", 1)?;
+        assert!(retrieved_lowercase.is_some());
+        
+        // Test non-existent pool
+        let non_existent = db.get_pool("0x0000000000000000000000000000000000000000", 1)?;
+        assert!(non_existent.is_none());
 
         Ok(())
     }
