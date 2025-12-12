@@ -12,6 +12,7 @@ mod dex;
 mod enhanced_revm_simulator;
 mod eth_client;
 mod flash_loan_manager;
+mod flashbots_bundle_builder;
 mod graph_client;
 mod mempool_monitor;
 mod mev_bundle_builder;
