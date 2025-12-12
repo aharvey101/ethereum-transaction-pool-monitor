@@ -1,2 +1,5 @@
 /target
 dex_pools.db
+broadcast/
+cache/
+out/
