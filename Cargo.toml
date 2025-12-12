@@ -32,6 +32,10 @@ path = "src/bin/test_mempool.rs"
 name = "test_basic_rpc"
 path = "src/bin/test_basic_rpc.rs"
 
+[[bin]]
+name = "block_dex_analyzer"
+path = "src/bin/block_dex_analyzer.rs"
+
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"

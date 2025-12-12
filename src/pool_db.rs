@@ -241,23 +241,22 @@ impl PoolDatabase {
         Ok(count as u32)
     }
 
-    /// Add a new pool to the database
-    #[allow(dead_code)]
-    pub fn add_pool(&self, pool: &DexPool) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR REPLACE INTO pools (address, protocol, token0, token1, chain_id)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                pool.address.to_lowercase(),
-                &pool.protocol,
-                &pool.token0,
-                &pool.token1,
-                pool.chain_id,
-            ],
-        )?;
-        Ok(())
-    }
+     /// Add a new pool to the database
+     pub fn insert_pool(&self, pool: &DexPool) -> Result<()> {
+         let conn = self.conn.lock().unwrap();
+         conn.execute(
+             "INSERT OR REPLACE INTO pools (address, protocol, token0, token1, chain_id)
+              VALUES (?1, ?2, ?3, ?4, ?5)",
+             params![
+                 pool.address.to_lowercase(),
+                 &pool.protocol,
+                 &pool.token0,
+                 &pool.token1,
+                 pool.chain_id,
+             ],
+         )?;
+         Ok(())
+     }
 
     /// Bulk insert pools
     pub fn add_pools(&self, pools: &[DexPool]) -> Result<()> {
@@ -454,7 +453,7 @@ mod tests {
             chain_id: 1,
         };
 
-        db.add_pool(&pool)?;
+         db.insert_pool(&pool)?;
         
         // Test that the pool can be retrieved
         let retrieved = db.get_pool("0x1F98431c8aD98523631AE4a59f267346ea3113F", 1)?;

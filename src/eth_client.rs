@@ -1117,4 +1117,193 @@ impl EthereumClient {
 
         Ok(code.to_string())
     }
+
+    /// Get block by number with transaction hashes
+    pub async fn get_block_by_number(&self, block_number: u64, include_transactions: bool) -> Result<Option<serde_json::Value>> {
+        let block_param = if block_number == u64::MAX {
+            "latest".to_string()
+        } else {
+            format!("0x{:x}", block_number)
+        };
+
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getBlockByNumber",
+            "params": [block_param, include_transactions],
+            "id": 1
+        });
+
+        let response = self
+            .http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        Ok(response_body.get("result").cloned())
+    }
+
+    /// Get block transactions by block number
+    pub async fn get_block_transactions(&self, block_number: u64) -> Result<Vec<serde_json::Value>> {
+        if let Some(block) = self.get_block_by_number(block_number, true).await? {
+            if let Some(transactions) = block.get("transactions").and_then(|t| t.as_array()) {
+                return Ok(transactions.clone());
+            }
+        }
+        Ok(vec![])
+    }
+
+    /// Get basic block information
+    pub async fn get_block_info(&self, block_number: u64) -> Result<Option<serde_json::Value>> {
+        self.get_block_by_number(block_number, false).await
+    }
+
+    /// Verify if a pool exists on-chain by checking if it has code at the address
+    pub async fn verify_pool_exists_onchain(&self, pool_address: &str) -> Result<bool> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getCode",
+            "params": [pool_address, "latest"],
+            "id": 1
+        });
+
+        let response = self
+            .http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            return Err(anyhow::anyhow!("eth_getCode error: {}", error["message"]));
+        }
+
+        let code = response_body
+            .get("result")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x");
+
+        // Pool exists if it has code beyond just "0x"
+        Ok(code.len() > 2)
+    }
+
+    /// Get pool token addresses by calling the token0() and token1() functions
+    pub async fn get_pool_tokens(&self, pool_address: &str) -> Result<Option<(String, String)>> {
+        // First verify the pool has code
+        if !self.verify_pool_exists_onchain(pool_address).await? {
+            return Ok(None);
+        }
+
+        // token0() function selector: 0x0dfe1681
+        let token0_call = self.call_contract_function(pool_address, "0x0dfe1681").await?;
+        // token1() function selector: 0xd21220a7  
+        let token1_call = self.call_contract_function(pool_address, "0xd21220a7").await?;
+
+        if let (Some(token0_result), Some(token1_result)) = (token0_call, token1_call) {
+            // Extract address from 32-byte result (last 20 bytes)
+            if token0_result.len() >= 42 && token1_result.len() >= 42 {
+                let token0_addr = format!("0x{}", &token0_result[token0_result.len()-40..]);
+                let token1_addr = format!("0x{}", &token1_result[token1_result.len()-40..]);
+                return Ok(Some((token0_addr, token1_addr)));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Call a contract function with given selector
+    async fn call_contract_function(&self, contract_address: &str, data: &str) -> Result<Option<String>> {
+        let request_body = json!({
+            "jsonrpc": "2.0", 
+            "method": "eth_call",
+            "params": [{
+                "to": contract_address,
+                "data": data
+            }, "latest"],
+            "id": 1
+        });
+
+        let response = self
+            .http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            // Contract call failed - pool likely doesn't exist or doesn't implement this function
+            debug!("Contract call failed: {}", error["message"]);
+            return Ok(None);
+        }
+
+        let result = response_body
+            .get("result")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        Ok(result)
+    }
+
+    /// Get pool reserves by calling getReserves() function (Uniswap V2 style)
+    pub async fn get_pool_reserves(&self, pool_address: &str) -> Result<Option<(String, String, u32)>> {
+        // getReserves() function selector: 0x0902f1ac
+        let reserves_call = self.call_contract_function(pool_address, "0x0902f1ac").await?;
+
+        if let Some(result) = reserves_call {
+            if result.len() >= 194 { // 0x + 3 * 64 chars = 194 chars minimum
+                // Parse reserves from 3 32-byte values: reserve0, reserve1, blockTimestampLast
+                let reserve0 = &result[2..66];   // First 32 bytes
+                let reserve1 = &result[66..130]; // Second 32 bytes
+                let timestamp = &result[130..194]; // Third 32 bytes
+                
+                // Convert timestamp hex to u32
+                let timestamp_u32 = u32::from_str_radix(&timestamp[56..], 16).unwrap_or(0);
+                
+                return Ok(Some((
+                    format!("0x{}", reserve0),
+                    format!("0x{}", reserve1), 
+                    timestamp_u32
+                )));
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_pool_verification() {
+        let eth_client = EthereumClient::new("http://192.168.0.14:8545").await.unwrap();
+        
+        // Test known USDC/WETH Uniswap V2 pool
+        let usdc_weth_pool = "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc";
+        
+        println!("Testing pool verification for: {}", usdc_weth_pool);
+        
+        // Test pool existence
+        let exists = eth_client.verify_pool_exists_onchain(usdc_weth_pool).await.unwrap();
+        println!("Pool exists: {}", exists);
+        
+        if exists {
+            // Try to get tokens
+            if let Some((token0, token1)) = eth_client.get_pool_tokens(usdc_weth_pool).await.unwrap() {
+                println!("Token0: {}", token0);
+                println!("Token1: {}", token1);
+            }
+        }
+    }
 }

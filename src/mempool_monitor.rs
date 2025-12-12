@@ -8,10 +8,10 @@ use crate::{
 use alloy_primitives::{hex::FromHex, Address, Bytes, U256, keccak256};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::str::FromStr;
 
-use std::time::SystemTime;
+use std::time::{SystemTime, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -114,6 +114,8 @@ pub struct MempoolMonitor {
     known_pools: HashSet<Address>,
     opportunity_sender: mpsc::UnboundedSender<MempoolOpportunity>,
     stats: MonitorStats,
+    // Transaction deduplication cache: hash -> timestamp
+    processed_transactions: HashMap<String, Instant>,
     // dynamic_discovery: Option<std::sync::Arc<DynamicPoolDiscovery>>,
 }
 
@@ -183,6 +185,7 @@ impl MempoolMonitor {
             known_pools,
             opportunity_sender,
             stats: MonitorStats::default(),
+            processed_transactions: HashMap::new(),
             // dynamic_discovery: None,
         };
 
@@ -323,6 +326,23 @@ impl MempoolMonitor {
 
     /// Process a single mempool transaction for MEV opportunities
     async fn process_mempool_transaction(&mut self, tx_hash: String) -> Result<()> {
+        // Check if we've already processed this transaction recently
+        let now = Instant::now();
+        if let Some(&last_processed) = self.processed_transactions.get(&tx_hash) {
+            if now.duration_since(last_processed).as_secs() < 60 { // Skip if processed in last 60 seconds
+                debug!("🔍 Skipping tx {} - already processed recently", tx_hash);
+                return Ok(());
+            }
+        }
+        
+        // Add to processed cache
+        self.processed_transactions.insert(tx_hash.clone(), now);
+        
+        // Clean old entries from cache (older than 5 minutes)
+        self.processed_transactions.retain(|_, &mut timestamp| {
+            now.duration_since(timestamp).as_secs() < 300
+        });
+
         self.stats.total_transactions_seen += 1;
 
         // Get full transaction details
@@ -510,21 +530,53 @@ impl MempoolMonitor {
             victim_tx.hash
         );
 
-        // Get pool details from database for realistic simulation
-        let pool_details = match self
-            .pool_db
-            .get_pool_by_address(&format!("{:#x}", pool_address))
-        {
-            Ok(Some(pool)) => pool,
-            Ok(None) => {
-                warn!("Pool not found in database: {:#x}", pool_address);
-                return Ok(None);
-            }
-            Err(e) => {
-                error!("Failed to query pool database: {}", e);
-                return Ok(None);
-            }
-        };
+         // Get pool details from database for realistic simulation
+         let pool_details = match self
+             .pool_db
+             .get_pool_by_address(&format!("{:#x}", pool_address))
+         {
+             Ok(Some(pool)) => pool,
+             Ok(None) => {
+                 info!("Pool not found in database, attempting on-chain verification: {:#x}", pool_address);
+                 
+                 // Fallback: Try to verify pool exists on-chain and get its tokens
+                 let pool_addr_str = format!("{:#x}", pool_address);
+                 match self.eth_client.get_pool_tokens(&pool_addr_str).await {
+                     Ok(Some((token0, token1))) => {
+                         info!("✅ Verified pool on-chain: {} (tokens: {} -> {})", pool_addr_str, token0, token1);
+                         
+                         // Create a temporary pool record for simulation
+                         use crate::pool_db::DexPool;
+                         let temp_pool = DexPool {
+                             address: pool_addr_str.clone(),
+                             protocol: "Unknown".to_string(),  // We'll determine protocol later
+                             token0: Some(token0),
+                             token1: Some(token1),
+                             chain_id: 1,
+                         };
+                         
+                         // Try to add to database for future lookups  
+                         if let Err(e) = self.pool_db.insert_pool(&temp_pool) {
+                             warn!("Failed to insert verified pool: {} - {}", pool_addr_str, e);
+                         }
+                         
+                         temp_pool
+                     },
+                     Ok(None) => {
+                         warn!("Pool address has no code or invalid tokens: {:#x}", pool_address);
+                         return Ok(None);
+                     },
+                     Err(e) => {
+                         error!("Failed to verify pool on-chain: {:#x} - {}", pool_address, e);
+                         return Ok(None);
+                     }
+                 }
+             }
+             Err(e) => {
+                 error!("Failed to query pool database: {}", e);
+                 return Ok(None);
+             }
+         };
 
         // Run basic sandwich simulation using pool state fetcher
         let simulation_result = match self
@@ -760,7 +812,7 @@ impl MempoolMonitor {
                         };
                         
                         // Store in database for future use
-                        if let Err(e) = self.pool_db.add_pool(&pool_info) {
+                         if let Err(e) = self.pool_db.insert_pool(&pool_info) {
                             warn!("Failed to cache fetched pool data: {}", e);
                         } else {
                             info!("💾 Cached new pool data for future use: {:#x}", pool_address);
@@ -983,8 +1035,8 @@ impl MempoolMonitor {
 
         // Extract first and last tokens
         if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], array_len) {
-            debug!("Extracted tokens from path: {} -> {}", token0, token1);
-            return self.calculate_uniswap_v2_pool(token0, token1).await;
+             debug!("Extracted tokens from path: {} -> {}", token0, token1);
+             return self.calculate_pool_address_enhanced(token0, token1).await;
         }
 
         Ok(None)
@@ -1036,10 +1088,10 @@ impl MempoolMonitor {
             }
         }
 
-        // If we found 2+ potential tokens, try to create pool from first two
-        if potential_tokens.len() >= 2 {
-            return self.calculate_uniswap_v2_pool(potential_tokens[0], potential_tokens[1]).await;
-        }
+         // If we found 2+ potential tokens, try to create pool from first two
+         if potential_tokens.len() >= 2 {
+             return self.calculate_pool_address_enhanced(potential_tokens[0], potential_tokens[1]).await;
+         }
 
         Ok(None)
     }
@@ -1066,11 +1118,11 @@ impl MempoolMonitor {
                     
                     if array_start + required_bytes <= params_data.len() {
                         // Try to extract first and last addresses from path
-                        if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], potential_len) {
-                            if let Some(pool) = self.calculate_uniswap_v2_pool(token0, token1).await? {
-                                return Ok(Some(pool));
-                            }
-                        }
+                         if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], potential_len) {
+                             if let Some(pool) = self.calculate_pool_address_enhanced(token0, token1).await? {
+                                 return Ok(Some(pool));
+                             }
+                         }
                     }
                 }
             }
@@ -1123,32 +1175,60 @@ impl MempoolMonitor {
         }
 
         // If we found at least 2 unique tokens, try to find a pool
-        if found_tokens.len() >= 2 {
-            return self.calculate_uniswap_v2_pool(found_tokens[0], found_tokens[1]).await;
+         if found_tokens.len() >= 2 {
+             return self.calculate_pool_address_enhanced(found_tokens[0], found_tokens[1]).await;
         }
 
         Ok(None)
     }
 
     /// Check if an address is likely to be a token contract
-    fn is_likely_token_address(&self, addr: Address) -> bool {
-        // Filter out obvious non-token addresses
-        if addr.is_zero() {
-            return false;
-        }
+     fn is_likely_token_address(&self, addr: Address) -> bool {
+         // Filter out obvious non-token addresses
+         if addr.is_zero() {
+             return false;
+         }
 
-        // Common patterns for non-token addresses to exclude
-        let addr_bytes = addr.as_slice();
-        
-        // Exclude addresses that are likely to be EOAs (very low addresses)
-        if addr_bytes.iter().take(18).all(|&b| b == 0) {
-            return false;
-        }
+         let addr_bytes = addr.as_slice();
+         
+         // Exclude addresses that are likely to be EOAs or malformed (too many leading zeros)
+         // Real token addresses should not have more than 4-5 consecutive leading zero bytes
+         let leading_zeros = addr_bytes.iter().take_while(|&&b| b == 0).count();
+         if leading_zeros > 5 {
+             return false;
+         }
 
-        // Exclude some known non-token patterns
-        // This is a simple heuristic - in production you might maintain a whitelist/blacklist
-        true
-    }
+         // Exclude addresses that look like numeric values rather than proper addresses
+         // Check if the address has patterns that suggest it's not a real contract address
+         
+         // Pattern 1: Addresses with alternating zero bytes (common in numeric data)
+         let zero_byte_count = addr_bytes.iter().filter(|&&b| b == 0).count();
+         if zero_byte_count > 14 { // More than 14 zero bytes out of 20 is suspicious
+             return false;
+         }
+
+         // Pattern 2: Check for obvious non-address patterns (all same byte, sequential patterns)
+         let unique_bytes: std::collections::HashSet<u8> = addr_bytes.iter().cloned().collect();
+         if unique_bytes.len() < 3 { // Too few unique bytes suggests numeric data
+             return false;
+         }
+
+         // Pattern 3: Exclude known contract patterns that are not tokens
+         let addr_str = format!("{:#x}", addr).to_lowercase();
+         
+         // Exclude common non-token contract patterns
+         if addr_str.ends_with("00000000") && addr_str.len() == 42 {
+             return false; // Likely a numeric value, not an address
+         }
+
+         // Known non-token addresses (ETH placeholder, zero-like addresses)
+         match addr_str.as_str() {
+             "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" => false, // ETH placeholder
+             "0x0000000000000000000000000000000000000000" => false, // Zero address  
+             _ if addr_str.contains("0000000000000000") => false, // Contains too many consecutive zeros
+             _ => true
+         }
+     }
 
     /// Extract token pair from Uniswap V3 exactInputSingle and similar functions
     async fn extract_v3_token_pair(&self, params_data: &[u8]) -> Result<Option<Address>> {
@@ -1183,11 +1263,11 @@ impl MempoolMonitor {
         let token_out = Address::from_slice(&params_data[44..64]);
         
         // Validate that these look like token addresses
-        if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
-            self.calculate_uniswap_v2_pool(token_in, token_out).await
-        } else {
-            Ok(None)
-        }
+         if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
+             self.calculate_pool_address_enhanced(token_in, token_out).await
+         } else {
+             Ok(None)
+         }
     }
 
     /// Try extracting tokens from V3 struct-based parameters
@@ -1208,8 +1288,8 @@ impl MempoolMonitor {
                 let token_in = Address::from_slice(&struct_data[12..32]);
                 let token_out = Address::from_slice(&struct_data[44..64]);
                 
-                if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
-                    return self.calculate_uniswap_v2_pool(token_in, token_out).await;
+                 if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
+                     return self.calculate_pool_address_enhanced(token_in, token_out).await;
                 }
             }
         }
@@ -1248,12 +1328,152 @@ impl MempoolMonitor {
         create2_data.extend_from_slice(salt.as_slice());
         create2_data.extend_from_slice(&init_code_hash);
         
-        let pool_hash = keccak256(&create2_data);
-        let pool_address = Address::from_slice(&pool_hash[12..]);
-        
-        info!("🔍 Calculated pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
-        Ok(Some(pool_address))
-    }
+         let pool_hash = keccak256(&create2_data);
+         let pool_address = Address::from_slice(&pool_hash[12..]);
+         
+         info!("🔍 Calculated pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
+         Ok(Some(pool_address))
+     }
+
+     /// Enhanced pool calculation with multiple DEX strategies and on-chain verification
+     async fn calculate_pool_address_enhanced(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
+         info!("🚀 Enhanced pool calculation for tokens: {} -> {}", token0, token1);
+
+         // Strategy 1: Try Uniswap V2 calculation
+         if let Some(v2_pool) = self.calculate_uniswap_v2_pool(token0, token1).await? {
+             let v2_addr = format!("{:#x}", v2_pool);
+             if self.eth_client.verify_pool_exists_onchain(&v2_addr).await.unwrap_or(false) {
+                 info!("✅ Found Uniswap V2 pool: {}", v2_addr);
+                 // Add to database for future lookups
+                 self.add_pool_to_database(v2_pool, "UniswapV2", token0, token1).await?;
+                 return Ok(Some(v2_pool));
+             }
+         }
+
+         // Strategy 2: Try Uniswap V3 with different fee tiers
+         let fee_tiers = [500u32, 3000u32, 10000u32]; // 0.05%, 0.3%, 1.0%
+         for fee in fee_tiers {
+             if let Some(v3_pool) = self.calculate_uniswap_v3_pool(token0, token1, fee).await? {
+                 let v3_addr = format!("{:#x}", v3_pool);
+                 if self.eth_client.verify_pool_exists_onchain(&v3_addr).await.unwrap_or(false) {
+                     info!("✅ Found Uniswap V3 pool ({}bps): {}", fee, v3_addr);
+                     self.add_pool_to_database(v3_pool, "UniswapV3", token0, token1).await?;
+                     return Ok(Some(v3_pool));
+                 }
+             }
+         }
+
+         // Strategy 3: Try SushiSwap calculation
+         if let Some(sushi_pool) = self.calculate_sushiswap_pool(token0, token1).await? {
+             let sushi_addr = format!("{:#x}", sushi_pool);
+             if self.eth_client.verify_pool_exists_onchain(&sushi_addr).await.unwrap_or(false) {
+                 info!("✅ Found SushiSwap pool: {}", sushi_addr);
+                 self.add_pool_to_database(sushi_pool, "SushiSwap", token0, token1).await?;
+                 return Ok(Some(sushi_pool));
+             }
+         }
+
+         info!("❌ No valid pool found for tokens: {} -> {}", token0, token1);
+         Ok(None)
+     }
+
+     /// Calculate Uniswap V3 pool address with specific fee tier
+     async fn calculate_uniswap_v3_pool(&self, token0: Address, token1: Address, fee: u32) -> Result<Option<Address>> {
+         // Sort tokens (Uniswap V3 requirement)
+         let (sorted_token0, sorted_token1) = if token0 < token1 { 
+             (token0, token1) 
+         } else { 
+             (token1, token0) 
+         };
+
+         // Uniswap V3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea31F984
+         let factory = Address::from_str("0x1F98431c8aD98523631AE4a59f267346ea31F984")?;
+         
+         // Calculate CREATE2 address: keccak256(abi.encode(token0, token1, fee))
+         let mut salt_data = Vec::new();
+         salt_data.extend_from_slice(sorted_token0.as_slice());
+         salt_data.extend_from_slice(sorted_token1.as_slice());
+         salt_data.extend_from_slice(&fee.to_be_bytes()[1..4]); // Use 3 bytes for fee
+         let salt = keccak256(&salt_data);
+
+         // Uniswap V3 Pool init code hash
+         let init_code_hash = [
+             0xe3, 0x4f, 0x19, 0x9b, 0x19, 0xb2, 0xb4, 0xf4, 0x7f, 0x29, 0xcb, 0x2c, 0x60, 0x7b, 0x34, 0x51, 
+             0x33, 0xd4, 0x08, 0x69, 0x7a, 0x59, 0xd7, 0x3b, 0xc1, 0x2a, 0x73, 0x3c, 0xf7, 0xd7, 0xb3, 0x09
+         ];
+         
+         // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
+         let mut create2_data = Vec::new();
+         create2_data.push(0xff);
+         create2_data.extend_from_slice(factory.as_slice());
+         create2_data.extend_from_slice(salt.as_slice());
+         create2_data.extend_from_slice(&init_code_hash);
+         
+         let pool_hash = keccak256(&create2_data);
+         let pool_address = Address::from_slice(&pool_hash[12..]);
+         
+         info!("🔍 Calculated V3 pool: {} -> {} ({}bps) = {}", sorted_token0, sorted_token1, fee, pool_address);
+         Ok(Some(pool_address))
+     }
+
+     /// Calculate SushiSwap pool address  
+     async fn calculate_sushiswap_pool(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
+         // Sort tokens (SushiSwap requirement)
+         let (sorted_token0, sorted_token1) = if token0 < token1 { 
+             (token0, token1) 
+         } else { 
+             (token1, token0) 
+         };
+
+         // SushiSwap Factory: 0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac
+         let factory = Address::from_str("0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac")?;
+         
+         // Calculate CREATE2 address
+         let mut data = Vec::new();
+         data.extend_from_slice(sorted_token0.as_slice());
+         data.extend_from_slice(sorted_token1.as_slice());
+         let salt = keccak256(&data);
+
+         // SushiSwap init code hash (same as Uniswap V2)
+         let init_code_hash = [
+             0x96, 0xe8, 0xac, 0x42, 0x77, 0x19, 0x8f, 0xf8, 0xb6, 0xf7, 0x85, 0x47, 0x8a, 0xa9, 0xa3, 0x9f, 
+             0x40, 0x3c, 0xb7, 0x68, 0xdd, 0x02, 0xcb, 0xee, 0x32, 0x6c, 0x3e, 0x7d, 0xa3, 0x48, 0x84, 0x5f
+         ];
+         
+         // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
+         let mut create2_data = Vec::new();
+         create2_data.push(0xff);
+         create2_data.extend_from_slice(factory.as_slice());
+         create2_data.extend_from_slice(salt.as_slice());
+         create2_data.extend_from_slice(&init_code_hash);
+         
+         let pool_hash = keccak256(&create2_data);
+         let pool_address = Address::from_slice(&pool_hash[12..]);
+         
+         info!("🔍 Calculated SushiSwap pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
+         Ok(Some(pool_address))
+     }
+
+     /// Add newly discovered pool to database for future lookups
+     async fn add_pool_to_database(&self, pool_address: Address, protocol: &str, token0: Address, token1: Address) -> Result<()> {
+         use crate::pool_db::DexPool;
+
+         let pool = DexPool {
+             address: format!("{:#x}", pool_address),
+             protocol: protocol.to_string(),
+             token0: Some(format!("{:#x}", token0)),
+             token1: Some(format!("{:#x}", token1)),
+             chain_id: 1, // Mainnet
+         };
+
+         if let Err(e) = self.pool_db.insert_pool(&pool) {
+             warn!("Failed to insert pool into database: {} - {}", pool.address, e);
+         } else {
+             info!("💾 Added pool to database: {} ({})", pool.address, protocol);
+         }
+
+         Ok(())
+     }
 
     /// Check if address is a major DEX router (fallback for database lookup)
     fn is_major_dex_router(&self, address: &Address) -> bool {
@@ -1513,7 +1733,7 @@ impl MempoolMonitor {
                 chain_id: 1,
             };
             
-            if let Err(e) = self.pool_db.add_pool(&new_pool) {
+             if let Err(e) = self.pool_db.insert_pool(&new_pool) {
                 debug!("⚠️ Failed to add discovered pool to database: {}", e);
             } else {
                 info!("💾 Added discovered pool to database");
@@ -1951,14 +2171,15 @@ mod tests {
             }).unwrap()
         );
 
-        MempoolMonitor {
-            eth_client,
-            pool_db,
-            config,
-            known_pools: HashSet::new(),
-            opportunity_sender: tx,
-            stats: MonitorStats::default(),
-        }
+         MempoolMonitor {
+             eth_client,
+             pool_db,
+             config,
+             known_pools: HashSet::new(),
+             opportunity_sender: tx,
+             stats: MonitorStats::default(),
+             processed_transactions: HashMap::new(),
+         }
     }
 
     #[test]
