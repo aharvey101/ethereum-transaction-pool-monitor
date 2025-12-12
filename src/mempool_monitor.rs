@@ -75,6 +75,7 @@ pub struct MempoolOpportunity {
     pub time_sensitivity: u64, // seconds until opportunity expires
     pub required_capital_eth: f64,
     pub simulation_result: crate::enhanced_revm_simulator::EnhancedSandwichResult, // Full simulation data for transaction building
+    pub total_transactions_seen: u64, // Total transactions processed by mempool monitor
 }
 
 /// Configuration for mempool monitoring
@@ -492,6 +493,7 @@ impl MempoolMonitor {
             required_capital_eth: (simulation_result.frontrun_amount / U256::from(10u64.pow(18)))
                 .to::<u64>() as f64,
             simulation_result,
+            total_transactions_seen: self.stats.total_transactions_seen,
         };
 
         Ok(Some(opportunity))

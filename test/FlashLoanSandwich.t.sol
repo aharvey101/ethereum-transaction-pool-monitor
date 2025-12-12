@@ -115,8 +115,8 @@ contract FlashLoanSandwichTest is Test {
         assertEq(sandwich.BALANCER_VAULT(), BALANCER_VAULT);
         assertEq(sandwich.WETH(), WETH);
         assertEq(sandwich.UNISWAP_V2_ROUTER(), UNISWAP_V2_ROUTER);
-        assertEq(sandwich.minProfitBasisPoints(), 50); // 0.5%
-        assertEq(sandwich.maxSlippageBasisPoints(), 200); // 2%
+        assertEq(sandwich.minProfitBasisPoints(), 1); // 0.01% - ULTRA AGGRESSIVE!
+        assertEq(sandwich.maxSlippageBasisPoints(), 1000); // 10% - MAXIMUM RISK!
     }
 
     function testOnlyOwnerCanExecuteSandwich() public {
@@ -494,21 +494,21 @@ contract FlashLoanSandwichTest is Test {
         console.log("\n=== SIMULATING FLASHBOTS BUNDLE ===");
         console.log("TX 1: Our frontrun (flash loan + trade)");
         
-        uint256 frontrunAmount = 3 ether; // Smaller frontrun for realistic test
+        uint256 frontrunAmount = 8 ether; // AGGRESSIVE frontrun for maximum impact!
         
-        // Simulate receiving flash loan
-        vm.deal(address(sandwich), 10 ether);
+        // Simulate receiving flash loan - MORE CAPITAL!
+        vm.deal(address(sandwich), 25 ether);
         vm.prank(address(sandwich));
-        IWETH(WETH).deposit{value: 10 ether}();
+        IWETH(WETH).deposit{value: 25 ether}();
         
-        // Execute frontrun: WETH -> USDT
+        // Execute AGGRESSIVE frontrun: WETH -> USDT
         vm.prank(address(sandwich));
         IERC20Extended(WETH).approve(UNISWAP_V2_ROUTER, frontrunAmount);
         
         vm.prank(address(sandwich));
         IUniswapV2RouterExtended(UNISWAP_V2_ROUTER).swapExactTokensForTokens(
             frontrunAmount,
-            0, // Accept any amount
+            0, // NO SLIPPAGE PROTECTION - MAXIMUM AGGRESSION!
             path,
             address(sandwich),
             block.timestamp + 300

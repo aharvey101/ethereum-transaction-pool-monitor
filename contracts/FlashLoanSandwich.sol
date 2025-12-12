@@ -58,8 +58,8 @@ contract FlashLoanSandwich is ReentrancyGuard, Ownable {
     address public constant UNISWAP_V2_ROUTER = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
     
     // State variables
-    uint256 public minProfitBasisPoints = 50; // 0.5% minimum profit
-    uint256 public maxSlippageBasisPoints = 200; // 2% max slippage
+    uint256 public minProfitBasisPoints = 1; // 0.01% minimum profit - ULTRA AGGRESSIVE!
+    uint256 public maxSlippageBasisPoints = 1000; // 10% max slippage - MAXIMUM RISK!
     
     // Events
     event SandwichExecuted(

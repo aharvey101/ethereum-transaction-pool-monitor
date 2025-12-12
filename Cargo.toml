@@ -24,6 +24,14 @@ path = "src/bin/graph_pool_fetcher.rs"
 name = "debug_abi_decoder"
 path = "src/bin/debug_abi_decoder.rs"
 
+[[bin]]
+name = "test_mempool"
+path = "src/bin/test_mempool.rs"
+
+[[bin]]
+name = "test_basic_rpc"
+path = "src/bin/test_basic_rpc.rs"
+
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"

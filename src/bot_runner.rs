@@ -310,6 +310,9 @@ impl MevBotRunner {
             {
                 let mut stats_lock = stats.write().await;
                 stats_lock.opportunities_detected += 1;
+                
+                // Update mempool transaction count from opportunity
+                stats_lock.mempool_tx_processed = opportunity.total_transactions_seen;
 
                 // Update average confidence
                 let total_conf = stats_lock.avg_opportunity_confidence
@@ -374,8 +377,18 @@ impl MevBotRunner {
             metrics.uptime_hours
         );
         info!(
+            "║ Transactions Processed: {}                                ║",
+            stats.mempool_tx_processed
+        );
+        info!(
             "║ Opportunities Detected: {}                                ║",
             stats.opportunities_detected
+        );
+        info!(
+            "║ Detection Rate: {:.4}%                                   ║",
+            if stats.mempool_tx_processed > 0 {
+                (stats.opportunities_detected as f64 / stats.mempool_tx_processed as f64) * 100.0
+            } else { 0.0 }
         );
         info!(
             "║ Bundles Submitted: {}                                      ║",
@@ -414,9 +427,13 @@ impl MevBotRunner {
             let stats_snapshot = stats.read().await.clone();
             let metrics = stats_snapshot.calculate_metrics();
 
-            info!("🤖 MEV Bot Stats | Uptime: {:.1}h | Opportunities: {} | Bundles: {}/{} ({:.1}%) | Profit: {:.4} ETH | Rate: {:.2}/h",
+            info!("🤖 MEV Bot Stats | Uptime: {:.1}h | TX Processed: {} | Opportunities: {} ({:.4}%) | Bundles: {}/{} ({:.1}%) | Profit: {:.4} ETH | Rate: {:.2}/h",
                 metrics.uptime_hours,
+                stats_snapshot.mempool_tx_processed,
                 stats_snapshot.opportunities_detected,
+                if stats_snapshot.mempool_tx_processed > 0 {
+                    (stats_snapshot.opportunities_detected as f64 / stats_snapshot.mempool_tx_processed as f64) * 100.0
+                } else { 0.0 },
                 stats_snapshot.bundles_included,
                 stats_snapshot.bundles_submitted,
                 metrics.success_rate * 100.0,

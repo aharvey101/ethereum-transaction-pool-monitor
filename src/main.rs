@@ -880,7 +880,7 @@ async fn run_mev_bot(
         max_opportunities_per_block: 3,
         enable_flashbots: enable_flashbots && !simulation_only, // Only enable if not simulation
         signing_key: std::env::var("PRIVATE_KEY").ok(), // Get from environment
-        sandwich_contract_address: Some("0x79E2a11cD852479c91C63660F69A9b1e7bA5dfE8".to_string()), // Deployed contract
+        sandwich_contract_address: Some("0x79E2a11cD852479c91C63660F69A9b1e7bA5dfE8".to_string()), // Working deployed contract (needs ultra-aggressive upgrade)
     };
 
     // Determine execution method
