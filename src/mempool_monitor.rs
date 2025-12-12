@@ -843,7 +843,7 @@ impl MempoolMonitor {
     }
 
     /// Parse router transaction input to find target pool
-    async fn parse_router_target_pool(
+    pub async fn parse_router_target_pool(
         &self,
         input_data: &Bytes,
         _router_address: &str,
