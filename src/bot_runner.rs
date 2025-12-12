@@ -619,21 +619,45 @@ impl MevBotRunner {
     ) -> Result<()> {
         let start_time = Instant::now();
         debug!(
-            "Executing opportunity for block {}: {}",
+            "🎯 Executing sandwich opportunity for block {}: {}",
             target_block, opportunity.victim_tx.hash
         );
+        
+        info!("📋 Bundle execution details:");
+        info!("   • Target block: {}", target_block);
+        info!("   • Victim TX: {}", opportunity.victim_tx.hash);
+        info!("   • Expected profit: {} ETH", opportunity.simulation_result.net_profit_eth);
+        info!("   • Execution method: {:?}", execution_method);
 
         // Execute sandwich attack using the specified method
+        info!("🚀 Starting bundle execution...");
         let submission_result = match bundle_builder
             .execute_sandwich_attack(&opportunity, execution_method.clone())
             .await
         {
-            Ok(result) => result,
+            Ok(result) => {
+                info!("✅ Bundle execution completed");
+                info!("   • Submitted: {}", result.submitted);
+                if let Some(ref hash) = result.bundle_hash {
+                    info!("   • Bundle hash: {}", hash);
+                } else {
+                    info!("   • Bundle hash: None");
+                }
+                if let Some(ref error) = result.error {
+                    info!("   • Error: {}", error);
+                }
+                result
+            }
             Err(e) => {
-                warn!(
-                    "Failed to execute sandwich for {}: {}",
+                error!(
+                    "❌ Bundle execution failed for {}: {}",
                     opportunity.victim_tx.hash, e
                 );
+                warn!("   • This could be due to:");
+                warn!("     - Network connectivity issues");
+                warn!("     - Invalid opportunity parameters");  
+                warn!("     - Flashbots relay problems");
+                warn!("     - Missing implementation (current status)");
                 return Err(e);
             }
         };
@@ -653,16 +677,49 @@ impl MevBotRunner {
                 stats_lock.total_profit_eth += submission_result.profit_eth;
                 stats_lock.total_gas_fees_eth += submission_result.total_gas_used as f64 * 0.5e-9; // Estimate gas cost at 0.5 gwei
 
-                info!(
-                    "Bundle submitted for block {} | Hash: {:?} | Profit: {:.4} ETH | Gas: {}",
-                    target_block,
-                    submission_result.bundle_hash,
-                    submission_result.profit_eth,
-                    submission_result.total_gas_used
-                );
+                info!("✅ BUNDLE SUCCESSFULLY SUBMITTED");
+                info!("   ╔══════════════════════════════════════╗");
+                info!("   ║           SUBMISSION DETAILS          ║");
+                info!("   ╠══════════════════════════════════════╣");
+                info!("   ║ Block: {}                       ║", target_block);
+                info!("   ║ Hash: {:?}              ║", submission_result.bundle_hash.as_deref().unwrap_or("N/A"));
+                info!("   ║ Profit: {:.4} ETH                    ║", submission_result.profit_eth);
+                info!("   ║ Gas Used: {}                     ║", submission_result.total_gas_used);
+                info!("   ║ Coinbase Payment: {:.4} ETH          ║", submission_result.coinbase_payment.to::<u64>() as f64 / 1e18);
+                info!("   ╚══════════════════════════════════════╝");
             } else {
                 stats_lock.failed_submissions += 1;
-                warn!("Bundle submission failed: {:?}", submission_result.error);
+                error!("❌ BUNDLE SUBMISSION FAILED");
+                error!("   ╔══════════════════════════════════════╗");
+                error!("   ║             FAILURE DETAILS           ║");
+                error!("   ╠══════════════════════════════════════╣");
+                error!("   ║ Victim TX: {}     ║", &opportunity.victim_tx.hash[..10]);
+                if let Some(ref error_msg) = submission_result.error {
+                    error!("   ║ Error: {:<30}║", &error_msg[..std::cmp::min(30, error_msg.len())]);
+                }
+                error!("   ║ Expected Profit: {:.4} ETH           ║", submission_result.profit_eth);
+                error!("   ║ Target Block: {}                 ║", target_block);
+                error!("   ╚══════════════════════════════════════╝");
+                
+                // Provide troubleshooting guidance
+                if let Some(ref error_msg) = submission_result.error {
+                    if error_msg.contains("SIMULATION MODE") {
+                        warn!("💡 TROUBLESHOOTING: This failure is expected in simulation mode");
+                        warn!("   • The bot is not yet configured for real Flashbots submission");
+                        warn!("   • To enable real submission, implement FlashbotsBundleBuilder integration");
+                        warn!("   • Add PRIVATE_KEY environment variable for transaction signing");
+                    } else if error_msg.contains("Validation failed") {
+                        warn!("💡 TROUBLESHOOTING: Opportunity validation failed");
+                        warn!("   • Check if pool liquidity is sufficient");
+                        warn!("   • Verify token pair addresses are valid");  
+                        warn!("   • Ensure profit threshold is met");
+                    } else {
+                        warn!("💡 TROUBLESHOOTING: Unknown error occurred");
+                        warn!("   • Check network connectivity to Flashbots relay");
+                        warn!("   • Verify Ethereum RPC endpoint is responsive");
+                        warn!("   • Check gas price and transaction parameters");
+                    }
+                }
             }
         }
 

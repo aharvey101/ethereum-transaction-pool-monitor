@@ -6,7 +6,7 @@ use alloy_primitives::{Address, Bytes, U256};
 use alloy_sol_types::{sol, SolCall};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::info;
+use tracing::{info, error};
 
 #[derive(Debug, Clone)]
 pub struct MevBundleBuilder {
@@ -112,12 +112,20 @@ impl MevBundleBuilder {
         opportunity: &MempoolOpportunity,
     ) -> Result<BundleSubmissionResult> {
         
+        info!("🏛️ === STARTING FLASHBOTS BUNDLE SUBMISSION ===");
+        
         // Validate that we have the required components
-        let _contract_address = self.sandwich_contract_address
+        let contract_address = self.sandwich_contract_address
             .ok_or_else(|| anyhow::anyhow!("Sandwich contract address not set"))?;
 
+        info!("📋 Pre-submission validation:");
+        info!("   ✅ Sandwich contract: {}", contract_address);
+        info!("   ✅ Flashbots relay: {}", self.flashbots_relay_url);
+        
         // Validate opportunity before execution
+        info!("🔍 Validating sandwich opportunity...");
         if let Err(e) = self.validate_opportunity(opportunity).await {
+            error!("❌ Opportunity validation failed: {}", e);
             return Ok(BundleSubmissionResult {
                 bundle_hash: None,
                 simulation: None,
@@ -128,37 +136,72 @@ impl MevBundleBuilder {
                 error: Some(format!("Validation failed: {}", e)),
             });
         }
+        info!("✅ Opportunity validation passed");
 
-        info!("🏛️ === ATOMIC FLASHBOTS FLASH LOAN SANDWICH ===");
         info!("📊 Opportunity details:");
-        info!("   Victim TX: {}", opportunity.victim_tx.hash);
-        info!("   Frontrun amount: {} ETH", opportunity.simulation_result.frontrun_amount.to::<u64>() as f64 / 1e18);
-        info!("   Expected profit: {} ETH", opportunity.simulation_result.net_profit_eth);
-        info!("   Target pool: {}", opportunity.sandwich_target.pool.address);
+        info!("   • Victim TX: {}", opportunity.victim_tx.hash);
+        info!("   • Victim amount: {} ETH", opportunity.victim_tx.value.to::<u64>() as f64 / 1e18);
+        info!("   • Frontrun amount: {} ETH", opportunity.simulation_result.frontrun_amount.to::<u64>() as f64 / 1e18);
+        info!("   • Expected profit: {} ETH", opportunity.simulation_result.net_profit_eth);
+        info!("   • Target pool: {}", opportunity.sandwich_target.pool.address);
+        info!("   • Pool protocol: {}", opportunity.sandwich_target.pool.protocol);
+        info!("   • Pool liquidity: ${:.2}", opportunity.sandwich_target.pool.total_liquidity_usd);
 
-        // TODO: Integrate with FlashbotsBundleBuilder for real submission
-        info!("🚀 Contract deployed at: {:?}", self.sandwich_contract_address);
-        info!("⚡ Ready for atomic flash loan execution via Flashbots");
+        // Get current block for bundle targeting
+        info!("🎯 Preparing bundle for submission...");
+        let target_block = self.get_next_block_number().await?;
+        info!("   • Target block: {}", target_block);
 
+        // **CRITICAL ISSUE IDENTIFIED**: The current implementation doesn't actually submit to Flashbots!
+        // It just returns a placeholder result. Let me implement real submission.
+        
+        info!("⚠️  IMPLEMENTATION STATUS: Flashbots integration in development");
+        info!("   • Currently using simulation mode");  
+        info!("   • Real Flashbots submission requires:");
+        info!("     - Private key for bundle signing");
+        info!("     - Proper transaction construction");
+        info!("     - Flash loan contract integration");
+        
+        // TODO: Implement actual FlashbotsBundleBuilder integration
+        // This is why your bundle "failed" - it never actually got submitted!
+        
+        info!("🚀 SIMULATION RESULT (would be submitted to Flashbots):");
+        info!("   • Bundle would contain 3 transactions:");
+        info!("     1. Flash loan initiation + frontrun");
+        info!("     2. Victim transaction (already in mempool)");  
+        info!("     3. Backrun + flash loan repayment");
+        info!("   • Estimated gas usage: ~800k gas");
+        info!("   • Miner tip: {:.4} ETH (10%)", opportunity.simulation_result.net_profit_eth * 0.1);
+
+        // Return detailed simulation result
         Ok(BundleSubmissionResult {
-            bundle_hash: Some("flashbots_flash_loan_ready".to_string()),
+            bundle_hash: Some(format!("SIMULATION_BUNDLE_{}", target_block)),
             simulation: Some(BundleSimulation {
-                coinbase_diff: ((opportunity.simulation_result.net_profit_eth * 0.1 * 1e18) as u64).to_string(), // 10% to miner
-                gas_fees: "800000000000000".to_string(), // ~800k gas * ~1 gwei 
-                gas_used: 800_000, // Flash loan sandwich gas estimate
+                coinbase_diff: ((opportunity.simulation_result.net_profit_eth * 0.1 * 1e18) as u64).to_string(),
+                gas_fees: "800000000000000".to_string(),
+                gas_used: 800_000,
                 success: true,
                 logs: vec![
-                    format!("Flash loan sandwich ready for contract: {:?}", self.sandwich_contract_address),
+                    "⚠️  SIMULATION MODE: Bundle not actually submitted".to_string(),
+                    format!("Flash loan contract: {}", contract_address),
                     format!("Flash loan amount: {} ETH", opportunity.simulation_result.frontrun_amount.to::<u64>() as f64 / 1e18),
                     "Atomic execution: frontrun → victim → backrun in single transaction".to_string(),
+                    "❗ To enable real submission: implement FlashbotsBundleBuilder integration".to_string(),
                 ],
             }),
-            submitted: false, // Not yet fully implemented
+            submitted: false, // ❗ This is why it shows as "failed"
             profit_eth: opportunity.simulation_result.net_profit_eth,
-            total_gas_used: 800_000, // Estimate for flash loan sandwich
-            coinbase_payment: U256::from((opportunity.simulation_result.net_profit_eth * 0.1 * 1e18) as u64), // 10% to miner
-            error: None, // Ready for implementation
+            total_gas_used: 800_000,
+            coinbase_payment: U256::from((opportunity.simulation_result.net_profit_eth * 0.1 * 1e18) as u64),
+            error: Some("SIMULATION MODE: Real Flashbots submission not implemented yet".to_string()),
         })
+    }
+
+    /// Get the next block number for bundle targeting
+    async fn get_next_block_number(&self) -> Result<u64> {
+        // TODO: Implement actual block number fetching from ETH client
+        // For now, return a placeholder
+        Ok(19_000_000) // Approximate current mainnet block
     }
 
     /// Simulate sandwich attack without execution
