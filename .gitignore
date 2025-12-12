@@ -3,3 +3,9 @@ dex_pools.db
 broadcast/
 cache/
 out/
+
+# Log files
+*.log
+mev_*.log
+test_*.log
+websocket_*.log
