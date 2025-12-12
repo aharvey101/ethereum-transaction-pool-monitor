@@ -738,79 +738,21 @@ impl MempoolMonitor {
         info!("🔍 Input data length: {} bytes", input_data.len());
         info!("🔍 Input data (first 100 bytes): 0x{}", hex::encode(&input_data[..std::cmp::min(100, input_data.len())]));
 
-        // Common Uniswap V2 Router function selectors
+        // Common Uniswap V2/V3 Router function selectors
         match function_selector {
-            // swapExactTokensForTokens(uint256,uint256,address[],address,uint256)
-            [0x38, 0xed, 0x17, 0x39] => {
-                info!("📊 Detected swapExactTokensForTokens");
-                self.parse_uniswap_v2_swap(&input_data[4..]).await
-            }
-            // swapExactETHForTokens(uint256,address[],address,uint256)
-            [0x7f, 0xf3, 0x6a, 0xb5] => {
-                info!("📊 Detected swapExactETHForTokens");
-                self.parse_uniswap_v2_eth_swap(&input_data[4..]).await
-            }
-            // swapExactTokensForETH(uint256,uint256,address[],address,uint256)
-            [0x18, 0xcb, 0xaf, 0xe5] => {
-                info!("📊 Detected swapExactTokensForETH");
-                self.parse_uniswap_v2_swap(&input_data[4..]).await
-            }
-            // swapTokensForExactTokens(uint256,uint256,address[],address,uint256)
-            [0x8f, 0x0e, 0x15, 0xa4] => {
-                info!("📊 Detected swapTokensForExactTokens");
-                self.parse_uniswap_v2_swap(&input_data[4..]).await
-            }
-            // swapTokensForExactETH(uint256,uint256,address[],address,uint256)
-            [0x4a, 0x25, 0xa9, 0x4a] => {
-                info!("📊 Detected swapTokensForExactETH");
-                self.parse_uniswap_v2_swap(&input_data[4..]).await
-            }
-            // swapETHForExactTokens(uint256,address[],address,uint256)
-            [0xfb, 0x3b, 0xdb, 0x41] => {
-                info!("📊 Detected swapETHForExactTokens");
-                self.parse_uniswap_v2_eth_swap(&input_data[4..]).await
-            }
-            // swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+            // All V2 swap functions - use simple parsing
+            [0x38, 0xed, 0x17, 0x39] | [0x7f, 0xf3, 0x6a, 0xb5] | [0x18, 0xcb, 0xaf, 0xe5] | 
+            [0x8f, 0x0e, 0x15, 0xa4] | [0x4a, 0x25, 0xa9, 0x4a] | [0xfb, 0x3b, 0xdb, 0x41] |
             [0x79, 0x1a, 0xc9, 0x47] => {
-                info!("📊 Detected swapExactTokensForTokensSupportingFeeOnTransferTokens");
-                self.parse_uniswap_v2_swap(&input_data[4..]).await
+                self.extract_token_pair_simple(&input_data[4..]).await
             }
-            // Uniswap V3 Router functions
-            // exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
+            // Uniswap V3 exactInputSingle
             [0x41, 0x4b, 0xf3, 0x89] => {
-                info!("📊 Detected Uniswap V3 exactInputSingle");
-                self.parse_uniswap_v3_exact_input_single(&input_data[4..]).await
+                self.extract_v3_token_pair(&input_data[4..]).await
             }
-            // exactInput((bytes,address,uint256,uint256,uint256))
-            [0xb8, 0x58, 0x18, 0x3f] => {
-                info!("📊 Detected Uniswap V3 exactInput");
-                self.parse_uniswap_v3_exact_input(&input_data[4..]).await
-            }
-            // exactOutputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
-            [0xdb, 0x3e, 0x21, 0x98] => {
-                info!("📊 Detected Uniswap V3 exactOutputSingle");
-                self.parse_uniswap_v3_exact_output_single(&input_data[4..]).await
-            }
-            // multicall(bytes[])
-            [0xac, 0x96, 0x50, 0xd8] => {
-                info!("📊 Detected Uniswap V3 multicall (0xac9650d8)");
-                self.parse_uniswap_v3_multicall(&input_data[4..]).await
-            }
-            // multicall(uint256,bytes[]) - Uniswap V3 Router V2
-            [0x5a, 0xe4, 0x01, 0xdc] => {
-                info!("📊 Detected Uniswap V3 multicall with deadline (0x5ae401dc)");
-                self.parse_uniswap_v3_multicall(&input_data[4..]).await
-            }
-            // removeLiquidityETHWithPermit and other functions
-            [0xde, 0xd9, 0x38, 0x2a] => {
-                info!("📊 Detected router function (0xded9382a) - attempting V2 parsing");
-                self.parse_uniswap_v2_swap(&input_data[4..]).await
-            }
+            // For now, focus on the most common swaps
             _ => {
-                debug!(
-                    "🔍 Unknown router function selector: 0x{}",
-                    hex::encode(function_selector)
-                );
+                debug!("🔍 Unsupported function: 0x{}", alloy_primitives::hex::encode(function_selector));
                 Ok(None)
             }
         }
@@ -818,238 +760,97 @@ impl MempoolMonitor {
 
     /// Parse Uniswap V2 swap (5 parameters: amountIn, amountOutMin, path, to, deadline)
     async fn parse_uniswap_v2_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
-        info!("🔧 === PARSING UNISWAP V2 SWAP ===");
-        info!("📊 Input data length: {} bytes", params_data.len());
-        
-        if params_data.len() < 160 {
-            info!(
-                "🔍 Insufficient data for Uniswap V2 swap: {} bytes (minimum: 160)",
-                params_data.len()
-            );
-            return Ok(None);
-        }
-
-        // Show hex dump of first 200 bytes for debugging
-        if params_data.len() > 0 {
-            let dump_len = std::cmp::min(200, params_data.len());
-            info!("📋 Hex dump (first {} bytes):", dump_len);
-            for (i, chunk) in params_data[..dump_len].chunks(32).enumerate() {
-                info!("   {:02x}: {}", i * 32, hex::encode(chunk));
-            }
-        }
-
-        // Path is 3rd parameter (index 2) - offset is at bytes 64-95 (32-byte word)
-        // Read the offset value from the last 4 bytes of the 32-byte word
-        if params_data.len() < 96 {
-            info!("🔍 Not enough data to read path offset: {} bytes", params_data.len());
-            return Ok(None);
-        }
-
-        let path_offset = u32::from_be_bytes([
-            params_data[92],  // Last 4 bytes of the 32-byte offset word
-            params_data[93],
-            params_data[94],
-            params_data[95],
-        ]) as usize;
-
-        info!("🔍 Path offset: {} bytes (0x{:x})", path_offset, path_offset);
-        
-        // Show the raw bytes we read for the offset
-        info!("🔍 Path offset bytes: 0x{}", hex::encode(&params_data[92..96]));
-        info!("🔍 Full offset word: 0x{}", hex::encode(&params_data[64..96]));
-
-        // Validate offset is within bounds
-        if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
-            info!(
-                "🔍 Path offset out of bounds: offset={}, data_len={}",
-                path_offset,
-                params_data.len()
-            );
-            return Ok(None);
-        }
-
-        // Read array length (first 32 bytes at offset) - take last 4 bytes 
-        let path_length = u32::from_be_bytes([
-            params_data[path_offset + 28],
-            params_data[path_offset + 29],
-            params_data[path_offset + 30],
-            params_data[path_offset + 31],
-        ]) as usize;
-
-        info!("🔍 Path length: {} tokens", path_length);
-        info!("🔍 Path length bytes: 0x{}", hex::encode(&params_data[path_offset + 28..path_offset + 32]));
-        info!("🔍 Full length word: 0x{}", hex::encode(&params_data[path_offset..path_offset + 32]));
-
-        if path_length < 2 {
-            info!("🔍 Path too short: {} tokens (minimum: 2)", path_length);
-            return Ok(None);
-        }
-        
-        if path_length > 10 {
-            info!("⚠️ Path unusually long: {} tokens - possible parsing error", path_length);
-            return Ok(None);
-        }
-
-        // Validate we have enough data for the tokens
-        let tokens_start = path_offset + 32;
-        let required_length = tokens_start + (path_length * 32);
-
-        if required_length > params_data.len() {
-            info!(
-                "🔍 Not enough data for token array: need {}, have {}",
-                required_length,
-                params_data.len()
-            );
-            return Ok(None);
-        }
-
-        // Extract first and last token addresses (each address is 32 bytes with 12 byte padding)
-        let token0_start = tokens_start + 12; // Skip padding
-        let token1_start = tokens_start + (path_length - 1) * 32 + 12; // Last token + skip padding
-        
-        info!("🔍 Token extraction positions:");
-        info!("   - tokens_start: {}", tokens_start);
-        info!("   - token0_start: {}", token0_start);
-        info!("   - token1_start: {}", token1_start);
-
-        if token0_start + 20 > params_data.len() || token1_start + 20 > params_data.len() {
-            info!(
-                "🔍 Token positions out of bounds: token0_end={}, token1_end={}, data_len={}",
-                token0_start + 20, token1_start + 20, params_data.len()
-            );
-            return Ok(None);
-        }
-
-        let token0_bytes = &params_data[token0_start..token0_start + 20];
-        let token1_bytes = &params_data[token1_start..token1_start + 20];
-
-        let token0 = Address::from_slice(token0_bytes);
-        let token1 = Address::from_slice(token1_bytes);
-        
-        // Extract amounts from V2 swap (amountIn and amountOutMin are first two 32-byte parameters)
-        let amount_in = if params_data.len() >= 32 {
-            u64::from_be_bytes([
-                params_data[24], params_data[25], params_data[26], params_data[27],
-                params_data[28], params_data[29], params_data[30], params_data[31],
-            ])
-        } else { 0 };
-
-        let amount_out_min = if params_data.len() >= 64 {
-            u64::from_be_bytes([
-                params_data[56], params_data[57], params_data[58], params_data[59],
-                params_data[60], params_data[61], params_data[62], params_data[63],
-            ])
-        } else { 0 };
-        
-        info!("🔍 Extracted amounts:");
-        info!("   - Amount In: {} wei ({} ETH)", amount_in, amount_in as f64 / 1e18);
-        info!("   - Amount Out Min: {} wei ({} ETH)", amount_out_min, amount_out_min as f64 / 1e18);
-        info!("🔍 Extracted token addresses:");
-        info!("   - Token 0: {} (bytes: 0x{})", token0, hex::encode(token0_bytes));
-        info!("   - Token {} (last): {} (bytes: 0x{})", path_length - 1, token1, hex::encode(token1_bytes));
-
-        info!("🔍 Token pair for pool lookup: {} -> {}", token0, token1);
-
-        self.find_pool_for_token_pair(token0, token1).await
+        // Most V2 swaps: path is 3rd parameter (offset at 0x40)
+        self.extract_token_pair_simple(params_data).await
     }
 
     /// Parse Uniswap V2 ETH swap (4 parameters: amountOutMin, path, to, deadline)
     async fn parse_uniswap_v2_eth_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
-        info!("🔧 === PARSING UNISWAP V2 ETH SWAP ===");
-        info!("📊 Input data length: {} bytes", params_data.len());
-        
-        if params_data.len() < 128 {
-            info!(
-                "🔍 Insufficient data for ETH swap: {} bytes (minimum: 128)",
-                params_data.len()
-            );
+        // ETH swaps: path is 2nd parameter (offset at 0x20)
+        self.extract_token_pair_simple(params_data).await
+    }
+
+    /// Simple token pair extraction from ABI-encoded data
+    async fn extract_token_pair_simple(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        if params_data.len() < 100 {
             return Ok(None);
         }
 
-        // Path is 2nd parameter (index 1) - offset is at bytes 32-63
+        // Look for path array - it contains consecutive 20-byte addresses
+        // Skip the first 64 bytes (first two parameters), then scan for array
+        for offset in (64..params_data.len()).step_by(32) {
+            if offset + 96 <= params_data.len() {
+                // Check if this looks like an array length (should be 2-5 for most swaps)
+                let array_len = u32::from_be_bytes([
+                    params_data[offset + 28], params_data[offset + 29], 
+                    params_data[offset + 30], params_data[offset + 31]
+                ]);
+                
+                if array_len >= 2 && array_len <= 5 {
+                    // Extract first and last token from the path
+                    let token_start = offset + 32;
+                    if token_start + (array_len as usize * 32) <= params_data.len() {
+                        let token0 = Address::from_slice(&params_data[token_start + 12..token_start + 32]);
+                        let token1_offset = token_start + ((array_len - 1) as usize * 32);
+                        let token1 = Address::from_slice(&params_data[token1_offset + 12..token1_offset + 32]);
+                        
+                        return self.calculate_uniswap_v2_pool(token0, token1).await;
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Extract token pair from Uniswap V3 exactInputSingle
+    async fn extract_v3_token_pair(&self, params_data: &[u8]) -> Result<Option<Address>> {
         if params_data.len() < 64 {
-            info!("🔍 Not enough data to read ETH swap path offset: {} bytes", params_data.len());
             return Ok(None);
         }
 
-        let path_offset = u32::from_be_bytes([
-            params_data[60],  // Last 4 bytes of the path offset word (bytes 32-63)
-            params_data[61],
-            params_data[62],
-            params_data[63],
-        ]) as usize;
-
-        info!("🔍 ETH swap path offset: {} bytes (0x{:x})", path_offset, path_offset);
-        info!("🔍 ETH swap path offset bytes: 0x{}", hex::encode(&params_data[60..64]));
-
-        // Validate offset is within bounds
-        if path_offset >= params_data.len() || path_offset + 32 > params_data.len() {
-            info!(
-                "🔍 ETH swap path offset out of bounds: offset={}, data_len={}",
-                path_offset,
-                params_data.len()
-            );
-            return Ok(None);
-        }
-
-        // Read array length (first 32 bytes at offset)
-        let path_length = u32::from_be_bytes([
-            params_data[path_offset + 28],
-            params_data[path_offset + 29],
-            params_data[path_offset + 30],
-            params_data[path_offset + 31],
-        ]) as usize;
-
-        info!("🔍 ETH swap path length: {} tokens", path_length);
-
-        if path_length < 2 {
-            info!("🔍 ETH swap path too short: {} tokens", path_length);
-            return Ok(None);
-        }
+        // V3 exactInputSingle: first two parameters are tokenIn and tokenOut
+        let token_in = Address::from_slice(&params_data[12..32]);
+        let token_out = Address::from_slice(&params_data[44..64]);
         
-        if path_length > 10 {
-            info!("⚠️ ETH swap path unusually long: {} tokens - possible parsing error", path_length);
-            return Ok(None);
-        }
+        self.calculate_uniswap_v2_pool(token_in, token_out).await
+    }
 
-        // Validate we have enough data for the tokens
-        let tokens_start = path_offset + 32;
-        let required_length = tokens_start + (path_length * 32);
-
-        if required_length > params_data.len() {
-            info!(
-                "🔍 ETH swap not enough data for token array: need {}, have {}",
-                required_length,
-                params_data.len()
-            );
-            return Ok(None);
-        }
-
-        // Extract first and second token addresses
-        let token0_start = tokens_start + 12; // Skip padding
-        let token1_start = tokens_start + 32 + 12; // Next address + skip padding
-
-        let token0_bytes = &params_data[token0_start..token0_start + 20];
-        let token1_bytes = &params_data[token1_start..token1_start + 20];
-
-        let token0 = Address::from_slice(token0_bytes);
-        let token1 = Address::from_slice(token1_bytes);
-
-        // Extract amountOutMin (first parameter, bytes 0-31, take last 8 bytes as u64)
-        let amount_out_min = if params_data.len() >= 32 {
-            u64::from_be_bytes([
-                params_data[24], params_data[25], params_data[26], params_data[27],
-                params_data[28], params_data[29], params_data[30], params_data[31],
-            ])
-        } else {
-            0
+    /// Calculate Uniswap V2 pool address from token pair
+    async fn calculate_uniswap_v2_pool(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
+        // Sort tokens (Uniswap V2 requirement)
+        let (sorted_token0, sorted_token1) = if token0 < token1 { 
+            (token0, token1) 
+        } else { 
+            (token1, token0) 
         };
 
-        info!("🔍 ETH swap extracted amounts:");
-        info!("   - Amount Out Min: {} wei ({} ETH)", amount_out_min, amount_out_min as f64 / 1e18);
-        info!("🔍 ETH swap extracted token pair: {} -> {}", token0, token1);
+        // Uniswap V2 Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f
+        let factory = Address::from_str("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f")?;
+        
+        // Calculate CREATE2 address: keccak256(abi.encodePacked(token0, token1, init_code_hash))
+        let mut data = Vec::new();
+        data.extend_from_slice(sorted_token0.as_slice());
+        data.extend_from_slice(sorted_token1.as_slice());
+        let salt = keccak256(&data);
 
-        self.find_pool_for_token_pair(token0, token1).await
+        // Uniswap V2 init code hash
+        let init_code_hash = [
+            0x96, 0xe8, 0xac, 0x42, 0x77, 0x19, 0x8f, 0xf8, 0xb6, 0xf7, 0x85, 0x47, 0x8a, 0xa9, 0xa3, 0x9f, 
+            0x40, 0x3c, 0xb7, 0x68, 0xdd, 0x02, 0xcb, 0xee, 0x32, 0x6c, 0x3e, 0x7d, 0xa3, 0x48, 0x84, 0x5f
+        ];
+        
+        // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
+        let mut create2_data = Vec::new();
+        create2_data.push(0xff);
+        create2_data.extend_from_slice(factory.as_slice());
+        create2_data.extend_from_slice(salt.as_slice());
+        create2_data.extend_from_slice(&init_code_hash);
+        
+        let pool_hash = keccak256(&create2_data);
+        let pool_address = Address::from_slice(&pool_hash[12..]);
+        
+        info!("🔍 Calculated pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
+        Ok(Some(pool_address))
     }
 
     /// Parse Uniswap V3 exactInputSingle function
