@@ -207,13 +207,17 @@ impl MempoolMonitor {
 
         debug!("🔧 Debug: About to start subscription loop");
 
-        // Subscribe to mempool transactions via WebSocket with auto-reconnection
+        // Subscribe to mempool transactions via WebSocket with polling fallback
+        let mut websocket_timeout_count = 0;
+        let max_websocket_timeouts = 3; // Try WebSocket 3 times before falling back
+
         loop {
             debug!("📡 Attempting to subscribe to pending transactions stream...");
 
             match self.eth_client.subscribe_pending_transactions().await {
                 Ok(mut tx_stream) => {
                     info!("✅ Successfully subscribed to mempool transactions");
+                    let mut no_activity_timer = tokio::time::Instant::now();
 
                     // Process transactions until connection drops
                     loop {
@@ -222,6 +226,10 @@ impl MempoolMonitor {
                             tx_result = tx_stream.recv() => {
                                 match tx_result {
                                     Some(tx_hash) => {
+                                        // Reset timeout counters when we receive transactions
+                                        websocket_timeout_count = 0;
+                                        no_activity_timer = tokio::time::Instant::now();
+                                        
                                         //info!("📨 Processing new pending transaction: {}", tx_hash);
                                         let tx_hash_for_debug = tx_hash.clone();
 
@@ -236,19 +244,74 @@ impl MempoolMonitor {
                                 }
                             }
 
-                            // Print stats every 30 seconds
+                            // Check for WebSocket inactivity (no transactions received)
                             _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
-                                self.print_monitoring_stats();
+                                if no_activity_timer.elapsed() > tokio::time::Duration::from_secs(30) {
+                                    websocket_timeout_count += 1;
+                                    warn!("⏰ WebSocket connected but no transactions received for 30s (timeout {}/{})", 
+                                          websocket_timeout_count, max_websocket_timeouts);
+                                    
+                                    if websocket_timeout_count >= max_websocket_timeouts {
+                                        warn!("🔄 Switching to polling fallback due to WebSocket inactivity");
+                                        break; // Exit to try polling
+                                    }
+                                } else {
+                                    self.print_monitoring_stats();
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
+                    websocket_timeout_count += 1;
                     error!(
-                        "❌ Failed to subscribe to mempool: {}. Retrying in 5 seconds...",
-                        e
+                        "❌ Failed to subscribe to mempool: {} (attempt {}/{}). Retrying in 5 seconds...",
+                        e, websocket_timeout_count, max_websocket_timeouts
                     );
                     tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+            }
+
+            // If WebSocket has failed too many times, try polling fallback
+            if websocket_timeout_count >= max_websocket_timeouts {
+                warn!("📊 WebSocket failed {} times, trying polling fallback...", websocket_timeout_count);
+                
+                match self.eth_client.poll_pending_transactions().await {
+                    Ok(mut tx_stream) => {
+                        info!("✅ Successfully started transaction polling fallback");
+                        
+                        // Process transactions from polling
+                        loop {
+                            tokio::select! {
+                                tx_result = tx_stream.recv() => {
+                                    match tx_result {
+                                        Some(tx_hash) => {
+                                            //info!("📨 Processing polled transaction: {}", tx_hash);
+                                            let tx_hash_for_debug = tx_hash.clone();
+
+                                            if let Err(e) = self.process_mempool_transaction(tx_hash).await {
+                                                info!("⚠️  Failed to process transaction {}: {}", tx_hash_for_debug, e);
+                                            }
+                                        }
+                                        None => {
+                                            warn!("📡 Polling stream disconnected");
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // Print stats every 30 seconds
+                                _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                                    self.print_monitoring_stats();
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to start polling fallback: {}. Retrying WebSocket...", e);
+                        websocket_timeout_count = 0; // Reset and try WebSocket again
+                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    }
                 }
             }
 
@@ -287,7 +350,7 @@ impl MempoolMonitor {
         if !self.known_pools.contains(&target_address) {
             // Check if this is a router transaction before skipping
             let target_string = format!("{:#x}", target_address);
-            let is_router = self.pool_db.is_dex_router(&target_string);
+            let is_router = self.pool_db.is_dex_router(&target_string) || self.is_major_dex_router(&target_address);
 
             if is_router {
                 info!(
@@ -295,10 +358,20 @@ impl MempoolMonitor {
                     tx_hash, target_address
                 );
             } else {
-                debug!(
-                    "🔍 Skipping tx {} - not a DEX interaction (target: {})",
-                    tx_hash, target_address
-                );
+                // Log addresses for debugging - only show high-value transactions
+                if tx_details.value_f64 > 0.01 {
+                    info!(
+                        "🔍 Non-DEX transaction (${:.2}, to: {}): {}",
+                        tx_details.value_f64 * 2000.0, // Estimate USD
+                        target_address,
+                        tx_hash
+                    );
+                } else {
+                    debug!(
+                        "🔍 Skipping tx {} - not a DEX interaction (target: {})",
+                        tx_hash, target_address
+                    );
+                }
                 return Ok(()); // Not a DEX interaction
             }
         } else {
@@ -595,13 +668,13 @@ impl MempoolMonitor {
         let is_dex = to_addr.map_or(false, |addr| {
             let addr_string = format!("{:#x}", addr); // Use hex format like 0x1234...
             let is_pool = self.known_pools.contains(&addr);
-            let is_router = self.pool_db.is_dex_router(&addr_string);
+            let is_router = self.pool_db.is_dex_router(&addr_string) || self.is_major_dex_router(&addr);
 
             // Log every transaction with value > $1 for debugging
             if estimated_value_usd > 1.0 {
                 info!(
-                    "🔍 Transaction to: {} (${:.2}) - Pool: {}, Router: {}",
-                    addr_string, estimated_value_usd, is_pool, is_router
+                    "🔍 Transaction to: {} (${:.2}) - Pool: {}, Router: {}, Input: {} bytes",
+                    addr_string, estimated_value_usd, is_pool, is_router, input.len()
                 );
             }
 
@@ -656,21 +729,69 @@ impl MempoolMonitor {
         let pools = self
             .pool_db
             .get_pools_by_address(&pool_address.to_string())?;
-        let pool_info = pools
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("Pool not found"))?;
+        
+        // Try to get pool from database first, if not found, fetch it proactively
+        let pool_info = if let Some(pool) = pools.first() {
+            info!("💾 Using cached pool data for: {:#x}", pool_address);
+            pool.clone()
+        } else {
+            info!("🔄 Pool not in database, fetching live data for: {:#x}", pool_address);
+            
+            // Use PoolStateFetcher to get live pool data
+            use crate::pool_state_fetcher::PoolStateFetcher;
+            let pool_fetcher = PoolStateFetcher::new("http://192.168.0.14:8545").await?;
+            
+            // Try different protocols - start with UniswapV2 as most common
+            let protocols_to_try = ["UniswapV2", "SushiSwap", "UniswapV3"];
+            let mut fetched_pool_info = None;
+            
+            for protocol in protocols_to_try.iter() {
+                match pool_fetcher.fetch_pool_state(pool_address, protocol).await {
+                    Ok(pool_state) => {
+                        info!("✅ Successfully fetched {} pool data for: {:#x}", protocol, pool_address);
+                        
+                        // Create DexPool from fetched data and store in database
+                        let pool_info = crate::pool_db::DexPool {
+                            address: pool_address.to_string(),
+                            protocol: protocol.to_string(),
+                            token0: Some(pool_state.token0.to_string()),
+                            token1: Some(pool_state.token1.to_string()),
+                            chain_id: 1, // Mainnet
+                        };
+                        
+                        // Store in database for future use
+                        if let Err(e) = self.pool_db.add_pool(&pool_info) {
+                            warn!("Failed to cache fetched pool data: {}", e);
+                        } else {
+                            info!("💾 Cached new pool data for future use: {:#x}", pool_address);
+                        }
+                        
+                        fetched_pool_info = Some(pool_info);
+                        break;
+                    }
+                    Err(_) => {
+                        debug!("❌ Failed to fetch as {} pool: {:#x}", protocol, pool_address);
+                        continue;
+                    }
+                }
+            }
+            
+            fetched_pool_info.ok_or_else(|| {
+                anyhow::anyhow!("Could not fetch pool data from any protocol for: {:#x}", pool_address)
+            })?
+        };
 
-        // Create pool state
+        // Create pool state using actual fetched data
         let pool_state = crate::sandwich_pool_integration::PoolState {
             address: pool_address,
             protocol: pool_info.protocol.clone(),
-            token0: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".parse()?, // WETH
-            token1: "0xdAC17F958D2ee523a2206206994597C13D831ec7".parse()?, // USDT
-            fee: 3000,                                                     // Default 0.3% fee
-            reserve0: U256::from(1000000000000000000000000_u128),          // Mock reserves
-            reserve1: U256::from(1000000000000_u128),
-            block_number: 0,               // Mock block number
-            total_liquidity_usd: 100000.0, // Mock liquidity
+            token0: pool_info.token0.as_ref().unwrap_or(&"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string()).parse()?,
+            token1: pool_info.token1.as_ref().unwrap_or(&"0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string()).parse()?,
+            fee: 3000, // Default 0.3% fee - will be fetched properly in future iterations
+            reserve0: U256::from(1000000000000000000000000_u128), // Will be updated by simulation
+            reserve1: U256::from(1000000000000_u128),             // Will be updated by simulation
+            block_number: 0,                                      // Will be updated by simulation  
+            total_liquidity_usd: 100000.0,                       // Will be updated by simulation
         };
 
         Ok(SandwichTarget {
@@ -851,6 +972,25 @@ impl MempoolMonitor {
         
         info!("🔍 Calculated pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
         Ok(Some(pool_address))
+    }
+
+    /// Check if address is a major DEX router (fallback for database lookup)
+    fn is_major_dex_router(&self, address: &Address) -> bool {
+        let addr_str = format!("{:#x}", address).to_lowercase();
+        
+        // Most common DEX routers on mainnet
+        match addr_str.as_str() {
+            "0x7a250d5630b4cf539739df2c5dacb4c659f2488d" | // Uniswap V2 Router
+            "0xe592427a0aece92de3edee1f18e0157c05861564" | // Uniswap V3 SwapRouter  
+            "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45" | // Uniswap V3 SwapRouter02
+            "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f" | // SushiSwap Router
+            "0x1111111254eeb25477b68fb85ed929f73a960582" | // 1inch Router V5
+            "0xdef1c0ded9bec7f1a1670819833240f027b25eff" | // 0x Protocol ExchangeProxy
+            "0x881d40237659c251811cec9c364ef91dc08d300c" | // MetaMask Swap Router
+            "0xdef171fe48cf0115b1d80b88dc8eab59176fee57"   // ParaSwap Augustus V5
+            => true,
+            _ => false
+        }
     }
 
     /// Parse Uniswap V3 exactInputSingle function

@@ -801,6 +801,8 @@ impl EthereumClient {
                         while let Some(message) = read.next().await {
                             match message {
                                 Ok(Message::Text(text)) => {
+                                    debug!("📨 Received WebSocket message: {}", text);
+                                    
                                     if let Ok(json) =
                                         serde_json::from_str::<serde_json::Value>(&text)
                                     {
@@ -816,12 +818,19 @@ impl EthereumClient {
                                         if let Some(params) = json.get("params") {
                                             if let Some(result) = params.get("result") {
                                                 if let Some(tx_hash) = result.as_str() {
+                                                    debug!("📨 Got transaction hash: {}", tx_hash);
                                                     if tx.send(tx_hash.to_string()).is_err() {
                                                         debug!("📡 Receiver dropped, closing WebSocket");
                                                         break;
                                                     }
+                                                } else {
+                                                    debug!("❓ Result is not a string: {:?}", result);
                                                 }
+                                            } else {
+                                                debug!("❓ No result in params: {:?}", params);
                                             }
+                                        } else {
+                                            debug!("❓ Unknown WebSocket message format: {:?}", json);
                                         }
                                     }
                                 }
@@ -849,6 +858,105 @@ impl EthereumClient {
         });
 
         Ok(rx)
+    }
+
+    /// Polling fallback for pending transactions when WebSocket doesn't broadcast events
+    pub async fn poll_pending_transactions(
+        &self,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<String>> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let client = self.clone();
+        
+        tokio::spawn(async move {
+            let mut known_transactions = std::collections::HashSet::new();
+            
+            loop {
+                match client.get_pending_transaction_hashes().await {
+                    Ok(tx_hashes) => {
+                        // Send only new transaction hashes
+                        for hash in tx_hashes {
+                            if !known_transactions.contains(&hash) {
+                                known_transactions.insert(hash.clone());
+                                
+                                // Clean up old hashes periodically (keep last 10k)
+                                if known_transactions.len() > 10000 {
+                                    let mut to_remove = Vec::new();
+                                    for (i, h) in known_transactions.iter().enumerate() {
+                                        if i > known_transactions.len() - 5000 {
+                                            break;
+                                        }
+                                        to_remove.push(h.clone());
+                                    }
+                                    for h in to_remove {
+                                        known_transactions.remove(&h);
+                                    }
+                                }
+                                
+                                if tx.send(hash).is_err() {
+                                    debug!("📡 Receiver dropped, stopping polling");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        debug!("❌ Failed to poll pending transactions: {}", e);
+                    }
+                }
+                
+                // Poll every 2 seconds
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
+        });
+        
+        Ok(rx)
+    }
+
+    /// Get pending transaction hashes from txpool
+    async fn get_pending_transaction_hashes(&self) -> Result<Vec<String>> {
+        let request_body = json!({
+            "jsonrpc": "2.0",
+            "method": "txpool_content",
+            "params": [],
+            "id": 1
+        });
+
+        let response = self
+            .http_client
+            .post(&self.rpc_url)
+            .json(&request_body)
+            .send()
+            .await?;
+
+        let response_body: serde_json::Value = response.json().await?;
+
+        if let Some(error) = response_body.get("error") {
+            anyhow::bail!("JSON-RPC Error: {}", error);
+        }
+
+        let mut tx_hashes = Vec::new();
+
+        // Extract pending transaction hashes from txpool_content
+        if let Some(result) = response_body.get("result") {
+            if let Some(pending) = result.get("pending") {
+                if let Some(pending_obj) = pending.as_object() {
+                    for (_, account_txs) in pending_obj {
+                        if let Some(account_obj) = account_txs.as_object() {
+                            for (_, tx_data) in account_obj {
+                                if let Some(hash) = tx_data.get("hash") {
+                                    if let Some(hash_str) = hash.as_str() {
+                                        tx_hashes.push(hash_str.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        debug!("📊 Found {} pending transactions via polling", tx_hashes.len());
+        Ok(tx_hashes)
     }
 
     /// Get full transaction details by hash using alloy types
