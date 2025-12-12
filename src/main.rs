@@ -198,7 +198,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Setup logging to stdout for real-time visibility
+/// Setup logging to stdout with filtered output for better readability
 fn setup_logging() {
     let stdout_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stdout)
@@ -207,11 +207,29 @@ fn setup_logging() {
         .with_thread_ids(false)
         .with_thread_names(false);
 
+    // Create a filter that shows only our code and suppresses noisy crates
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            // Default filter: show our code at info level, suppress most crate noise
+            tracing_subscriber::EnvFilter::new(
+                "ethereum_transaction_pool_monitor=info,\
+                 alloy=warn,\
+                 tokio=warn,\
+                 hyper=warn,\
+                 h2=warn,\
+                 tower=warn,\
+                 tonic=warn,\
+                 reqwest=warn,\
+                 rustls=error,\
+                 want=error,\
+                 mio=error,\
+                 polling=error,\
+                 async_io=error"
+            )
+        });
+
     let subscriber = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with(env_filter)
         .with(stdout_layer);
 
     tracing::subscriber::set_global_default(subscriber)
