@@ -540,6 +540,8 @@ impl MevBundleBuilder {
             confidence_score: 0.8,
             time_sensitivity: 30, // 30 seconds
             required_capital_eth: 1.0,
+            simulation_result: crate::enhanced_revm_simulator::EnhancedSandwichResult::default(),
+            total_transactions_seen: 0, // Dummy value for testing
         };
 
         self.simulate_sandwich_only(&dummy_opportunity).await

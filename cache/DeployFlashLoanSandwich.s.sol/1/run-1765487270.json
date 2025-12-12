@@ -1,0 +1,7 @@
+{
+  "transactions": [
+    {
+      "rpc": "https://eth-mainnet.public.blastapi.io"
+    }
+  ]
+}
