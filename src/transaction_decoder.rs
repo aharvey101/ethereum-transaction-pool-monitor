@@ -333,6 +333,21 @@ impl TransactionDecoder {
                 "0x7c025200" => self.decode_1inch_swap(data), // swap
                 "0xe449022e" => self.decode_1inch_unoswap(data), // unoswap
 
+                // ========== DIRECT POOL FUNCTIONS (NEW!) ==========
+                // Uniswap V2 Direct Pool Functions
+                "0x022c0d9f" => self.decode_pool_swap_v2(data), // pool.swap(uint amount0Out, uint amount1Out, address to, bytes calldata data)
+                "0x6a627842" => self.decode_pool_mint_v2(data), // pool.mint(address to)
+                "0x89afcb44" => self.decode_pool_burn_v2(data), // pool.burn(address to)
+
+                // Uniswap V3 Direct Pool Functions  
+                "0x128acb08" => self.decode_pool_swap_v3(data), // pool.swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data)
+                "0x3c8a7d8d" => self.decode_pool_mint_v3(data), // pool.mint(address recipient, int24 tickLower, int24 tickUpper, uint128 amount, bytes calldata data)
+                "0xa34123a7" => self.decode_pool_burn_v3(data), // pool.burn(int24 tickLower, int24 tickUpper, uint128 amount)
+                "0x4f1eb3d8" => self.decode_pool_collect_v3(data), // pool.collect(...)
+
+                // Flash loan functions
+                "0x49041d7" => self.decode_pool_flash(data), // Various flash loan signatures
+
                 _ => None,
             },
         }
@@ -606,6 +621,151 @@ impl TransactionDecoder {
             function_name: "1inch UnoSwap".to_string(),
             token_in: "Token".to_string(),
             token_out: "Token".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    // ========== DIRECT POOL DECODER FUNCTIONS ==========
+
+    /// Decode Uniswap V2 pool.swap() direct call
+    fn decode_pool_swap_v2(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 258 { // 4 bytes sig + 4*32 bytes params minimum
+            return None;
+        }
+
+        // Extract amount0Out and amount1Out
+        let amount0_hex = &data[10..74]; // Skip 0x and function selector
+        let amount1_hex = &data[74..138];
+        
+        // Convert hex to readable amounts (simplified)
+        let amount0 = u64::from_str_radix(amount0_hex.trim_start_matches('0'), 16)
+            .unwrap_or(0);
+        let amount1 = u64::from_str_radix(amount1_hex.trim_start_matches('0'), 16)
+            .unwrap_or(0);
+
+        // Determine which token is being swapped (non-zero amount)
+        let (amount_out, direction) = if amount0 > 0 {
+            (amount0, "→ Token0")
+        } else {
+            (amount1, "→ Token1")
+        };
+
+        Some(SwapInfo {
+            function_name: format!("Direct V2 Pool Swap {}", direction),
+            token_in: "Pool Token".to_string(),
+            token_out: "Pool Token".to_string(),
+            amount_in: None,
+            amount_out_min: Some(format!("{}", amount_out)),
+        })
+    }
+
+    /// Decode Uniswap V2 pool.mint() direct call
+    fn decode_pool_mint_v2(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 74 { // 4 bytes sig + 32 bytes address
+            return None;
+        }
+
+        Some(SwapInfo {
+            function_name: "Direct V2 Pool Mint (Add Liquidity)".to_string(),
+            token_in: "LP Tokens".to_string(),
+            token_out: "Pool Tokens".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    /// Decode Uniswap V2 pool.burn() direct call
+    fn decode_pool_burn_v2(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 74 { // 4 bytes sig + 32 bytes address
+            return None;
+        }
+
+        Some(SwapInfo {
+            function_name: "Direct V2 Pool Burn (Remove Liquidity)".to_string(),
+            token_in: "LP Tokens".to_string(),
+            token_out: "Pool Tokens".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    /// Decode Uniswap V3 pool.swap() direct call
+    fn decode_pool_swap_v3(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 330 { // Larger parameter set for V3
+            return None;
+        }
+
+        // V3 swap has bool zeroForOne parameter to indicate direction
+        let zero_for_one_hex = &data[106..138]; // Approximate position
+        let zero_for_one = zero_for_one_hex.trim_start_matches('0') != "";
+
+        let direction = if zero_for_one { "Token0 → Token1" } else { "Token1 → Token0" };
+
+        Some(SwapInfo {
+            function_name: format!("Direct V3 Pool Swap ({})", direction),
+            token_in: "Pool Token".to_string(),
+            token_out: "Pool Token".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    /// Decode Uniswap V3 pool.mint() direct call
+    fn decode_pool_mint_v3(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 266 { // V3 mint has multiple parameters including ticks
+            return None;
+        }
+
+        Some(SwapInfo {
+            function_name: "Direct V3 Pool Mint (Add Liquidity)".to_string(),
+            token_in: "Tokens".to_string(),
+            token_out: "LP Position".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    /// Decode Uniswap V3 pool.burn() direct call  
+    fn decode_pool_burn_v3(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 202 { // V3 burn has tick parameters
+            return None;
+        }
+
+        Some(SwapInfo {
+            function_name: "Direct V3 Pool Burn (Remove Liquidity)".to_string(),
+            token_in: "LP Position".to_string(),
+            token_out: "Tokens".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    /// Decode Uniswap V3 pool.collect() direct call
+    fn decode_pool_collect_v3(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 330 { // V3 collect has many parameters
+            return None;
+        }
+
+        Some(SwapInfo {
+            function_name: "Direct V3 Pool Collect (Claim Fees)".to_string(),
+            token_in: "Unclaimed Fees".to_string(),
+            token_out: "Tokens".to_string(),
+            amount_in: None,
+            amount_out_min: None,
+        })
+    }
+
+    /// Decode flash loan functions
+    fn decode_pool_flash(&self, data: &str) -> Option<SwapInfo> {
+        if data.len() < 138 { // Basic flash loan parameters
+            return None;
+        }
+
+        Some(SwapInfo {
+            function_name: "Flash Loan".to_string(),
+            token_in: "Borrowed".to_string(),
+            token_out: "Repaid".to_string(),
             amount_in: None,
             amount_out_min: None,
         })

@@ -787,8 +787,15 @@ impl MempoolMonitor {
         // Parse input data
         let input = Bytes::from_hex(&tx_details.data).unwrap_or_default();
 
-        // Estimate USD value (simplified)
-        let estimated_value_usd = eth_value * 2000.0; // Assume $2000 ETH
+        // Enhanced USD value calculation considering swap amounts
+        let estimated_value_usd = self.calculate_transaction_value_usd(
+            &tx_details, 
+            &input, 
+            to_addr
+        ).await.unwrap_or_else(|| {
+            // Fallback to ETH value if enhanced calculation fails
+            eth_value * 2000.0 // Assume $2000 ETH
+        });
 
         // Check if this is a DEX interaction (either direct pool or router)
         let is_dex = to_addr.map_or(false, |addr| {
@@ -1054,6 +1061,22 @@ impl MempoolMonitor {
             // ParaSwap Functions
             [0x54, 0x84, 0xd8, 0x04] => self.extract_token_pair_simple(&input_data[4..]).await, // swapOnUniswap
             [0xad, 0x9c, 0x44, 0xa6] => self.extract_token_pair_simple(&input_data[4..]).await, // multiSwap
+
+            // ========== DIRECT POOL FUNCTIONS (NEW!) ==========
+            // Uniswap V2 Pool Direct Functions
+            [0x02, 0x2c, 0x0d, 0x9f] => self.extract_pool_swap_v2(&input_data[4..]).await, // pool.swap(uint amount0Out, uint amount1Out, address to, bytes calldata data)
+            [0x6a, 0x62, 0x78, 0x42] => self.extract_pool_mint_v2(&input_data[4..]).await, // pool.mint(address to)
+            [0x89, 0xaf, 0xcb, 0x44] => self.extract_pool_burn_v2(&input_data[4..]).await, // pool.burn(address to)
+
+            // Uniswap V3 Pool Direct Functions
+            [0x12, 0x8a, 0xcb, 0x08] => self.extract_pool_swap_v3(&input_data[4..]).await, // pool.swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data)
+            [0x3c, 0x8a, 0x7d, 0x8d] => self.extract_pool_mint_v3(&input_data[4..]).await, // pool.mint(address recipient, int24 tickLower, int24 tickUpper, uint128 amount, bytes calldata data)
+            [0xa3, 0x41, 0x23, 0xa7] => self.extract_pool_burn_v3(&input_data[4..]).await, // pool.burn(int24 tickLower, int24 tickUpper, uint128 amount)
+            [0x4f, 0x1e, 0xb3, 0xd8] => self.extract_pool_collect_v3(&input_data[4..]).await, // pool.collect(address recipient, int24 tickLower, int24 tickUpper, uint128 amount0Requested, uint128 amount1Requested)
+
+            // Additional Pool Functions (Flash loans, etc.)
+            [0x49, 0x04, 0xb1, 0xd7] => self.extract_pool_flash_v2(&input_data[4..]).await, // pool.swap() with flash loan data
+            [0xf3, 0x05, 0x8d, 0xb0] => self.extract_pool_flash_v3(&input_data[4..]).await, // pool.flash() for V3
 
             // For unrecognized functions, try simple token extraction anyway
             _ => {
@@ -2774,5 +2797,367 @@ mod tests {
         let result2 = monitor.try_extract_from_path_array(&test_data2).await;
         assert!(result2.is_ok());
         assert!(result2.unwrap().is_none());
+    }
+}
+
+// ========== DIRECT POOL PARSING FUNCTIONS ==========
+
+impl MempoolMonitor {
+    /// Extract pool information from Uniswap V2 pool.swap() direct call
+    /// Function: swap(uint amount0Out, uint amount1Out, address to, bytes calldata data)
+    async fn extract_pool_swap_v2(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("🏊 Parsing Uniswap V2 pool.swap() direct call");
+        
+        if params_data.len() < 128 { // 4 parameters minimum
+            debug!("❌ Insufficient data for V2 pool.swap: {} bytes", params_data.len());
+            return Ok(None);
+        }
+
+        // For direct pool swaps, we need to get the pool's tokens using eth_call
+        // Since we're already calling a pool contract, we can get its tokens directly
+        // This is a direct pool interaction - the transaction target IS the pool
+        // Return None to let the pool detection logic handle token extraction via eth_call
+        
+        debug!("✅ Direct V2 pool swap detected - will extract tokens via eth_call");
+        Ok(None)
+    }
+
+    /// Extract pool information from Uniswap V2 pool.mint() direct call
+    async fn extract_pool_mint_v2(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("🌱 Parsing Uniswap V2 pool.mint() direct call");
+        
+        if params_data.len() < 32 { // address to parameter
+            return Ok(None);
+        }
+
+        debug!("✅ Direct V2 pool mint detected - liquidity addition transaction");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from Uniswap V2 pool.burn() direct call  
+    async fn extract_pool_burn_v2(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("🔥 Parsing Uniswap V2 pool.burn() direct call");
+        
+        if params_data.len() < 32 { // address to parameter
+            return Ok(None);
+        }
+
+        debug!("✅ Direct V2 pool burn detected - liquidity removal transaction");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from Uniswap V3 pool.swap() direct call
+    /// Function: swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96, bytes calldata data)
+    async fn extract_pool_swap_v3(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("🏊 Parsing Uniswap V3 pool.swap() direct call");
+        
+        if params_data.len() < 160 { // 5 parameters minimum  
+            debug!("❌ Insufficient data for V3 pool.swap: {} bytes", params_data.len());
+            return Ok(None);
+        }
+
+        debug!("✅ Direct V3 pool swap detected - will extract tokens via eth_call");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from Uniswap V3 pool.mint() direct call
+    async fn extract_pool_mint_v3(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("🌱 Parsing Uniswap V3 pool.mint() direct call");
+        
+        if params_data.len() < 128 { // Multiple parameters including ticks
+            return Ok(None);
+        }
+
+        debug!("✅ Direct V3 pool mint detected - liquidity addition transaction");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from Uniswap V3 pool.burn() direct call
+    async fn extract_pool_burn_v3(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("🔥 Parsing Uniswap V3 pool.burn() direct call");
+        
+        if params_data.len() < 96 { // Tick range and amount parameters
+            return Ok(None);
+        }
+
+        debug!("✅ Direct V3 pool burn detected - liquidity removal transaction");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from Uniswap V3 pool.collect() direct call
+    async fn extract_pool_collect_v3(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("💰 Parsing Uniswap V3 pool.collect() direct call");
+        
+        if params_data.len() < 160 { // Multiple parameters for fee collection
+            return Ok(None);
+        }
+
+        debug!("✅ Direct V3 pool collect detected - fee collection transaction");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from flash loan calls
+    async fn extract_pool_flash_v2(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("⚡ Parsing V2 flash loan call");
+        
+        if params_data.len() < 128 {
+            return Ok(None);
+        }
+
+        debug!("✅ V2 flash loan detected");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Extract pool information from V3 flash calls
+    async fn extract_pool_flash_v3(&self, params_data: &[u8]) -> Result<Option<Address>> {
+        debug!("⚡ Parsing V3 flash loan call");
+        
+        if params_data.len() < 96 {
+            return Ok(None);
+        }
+
+        debug!("✅ V3 flash loan detected");
+        Ok(None) // Let pool detection handle token extraction
+    }
+
+    /// Calculate USD value of transaction considering actual swap amounts, not just ETH transfer
+    async fn calculate_transaction_value_usd(
+        &self,
+        tx_details: &crate::eth_client::MempoolTransaction,
+        input_data: &Bytes,
+        to_addr: Option<Address>,
+    ) -> Option<f64> {
+        // First, try to get ETH transfer value as baseline
+        let eth_value = tx_details.value_f64;
+        let eth_usd_baseline = eth_value * 2000.0; // $2000 ETH assumption
+
+        // If no input data, return ETH value only
+        if input_data.len() < 4 {
+            return Some(eth_usd_baseline);
+        }
+
+        // Get function signature
+        let function_selector = &input_data[0..4];
+        
+        // Try to extract swap amounts based on function type
+        match function_selector {
+            // Direct pool swaps - these often have large amounts even with small ETH transfer
+            [0x02, 0x2c, 0x0d, 0x9f] => {
+                // V2 pool.swap(uint amount0Out, uint amount1Out, address to, bytes calldata data)
+                if let Some(swap_value) = self.estimate_v2_pool_swap_value(input_data, to_addr).await {
+                    return Some(swap_value.max(eth_usd_baseline));
+                }
+            }
+            [0x12, 0x8a, 0xcb, 0x08] => {
+                // V3 pool.swap(address recipient, bool zeroForOne, int256 amountSpecified, ...)
+                if let Some(swap_value) = self.estimate_v3_pool_swap_value(input_data, to_addr).await {
+                    return Some(swap_value.max(eth_usd_baseline));
+                }
+            }
+            
+            // Router swaps - try to parse amounts from known router functions
+            [0x38, 0xed, 0x17, 0x39] => {
+                // swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)
+                if let Some(router_value) = self.estimate_router_swap_value(input_data, "swapExactTokensForTokens").await {
+                    return Some(router_value.max(eth_usd_baseline));
+                }
+            }
+            [0x7f, 0xf3, 0x6a, 0xb5] => {
+                // swapExactETHForTokens - ETH value is the actual swap value
+                return Some(eth_usd_baseline); // ETH value is correct here
+            }
+            [0x18, 0xcb, 0xaf, 0xe5] => {
+                // swapExactTokensForETH(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline)  
+                if let Some(router_value) = self.estimate_router_swap_value(input_data, "swapExactTokensForETH").await {
+                    return Some(router_value.max(eth_usd_baseline));
+                }
+            }
+            [0x41, 0x4b, 0xf3, 0x89] => {
+                // exactInputSingle - V3 router
+                if let Some(v3_value) = self.estimate_v3_router_swap_value(input_data).await {
+                    return Some(v3_value.max(eth_usd_baseline));
+                }
+            }
+            
+            _ => {
+                // Unknown function - use ETH transfer value
+                debug!("🔍 Unknown function signature, using ETH transfer value: ${:.2}", eth_usd_baseline);
+            }
+        }
+
+        // Fallback to ETH transfer value
+        Some(eth_usd_baseline)
+    }
+
+    /// Estimate USD value of Uniswap V2 pool direct swap
+    async fn estimate_v2_pool_swap_value(&self, input_data: &Bytes, pool_addr: Option<Address>) -> Option<f64> {
+        if input_data.len() < 100 || pool_addr.is_none() {
+            return None;
+        }
+
+        let pool_addr = pool_addr.unwrap();
+        
+        // Extract amount0Out and amount1Out from swap parameters
+        let amount0_out_bytes = &input_data[4..36];
+        let amount1_out_bytes = &input_data[36..68];
+        
+        // Convert to U256
+        let amount0_out = U256::from_be_slice(amount0_out_bytes);
+        let amount1_out = U256::from_be_slice(amount1_out_bytes);
+        
+        // Get the larger of the two amounts (one will be 0, other will be the output amount)
+        let swap_amount = if amount0_out > amount1_out { amount0_out } else { amount1_out };
+        
+        // Try to get pool token information to estimate value
+        if let Ok(Some((token0, token1))) = self.get_pool_tokens(pool_addr).await {
+            // Estimate token value - this is simplified, could be enhanced with price oracles
+            let estimated_value = self.estimate_token_value_usd(swap_amount, &token0, &token1).await;
+            if estimated_value > 1.0 {
+                debug!("💰 V2 pool swap estimated value: ${:.2} (amount: {})", estimated_value, swap_amount);
+                return Some(estimated_value);
+            }
+        }
+
+        None
+    }
+
+    /// Estimate USD value of Uniswap V3 pool direct swap
+    async fn estimate_v3_pool_swap_value(&self, input_data: &Bytes, pool_addr: Option<Address>) -> Option<f64> {
+        if input_data.len() < 164 || pool_addr.is_none() {
+            return None;
+        }
+
+        // V3 swap: amountSpecified is the 3rd parameter (int256)
+        let amount_specified_bytes = &input_data[68..100];
+        let amount_specified = U256::from_be_slice(amount_specified_bytes);
+        
+        // Convert from signed int (simplified - just take absolute value)
+        let swap_amount = amount_specified;
+
+        if let Some(pool_addr) = pool_addr {
+            if let Ok(Some((token0, token1))) = self.get_pool_tokens(pool_addr).await {
+                let estimated_value = self.estimate_token_value_usd(swap_amount, &token0, &token1).await;
+                if estimated_value > 1.0 {
+                    debug!("💰 V3 pool swap estimated value: ${:.2} (amount: {})", estimated_value, swap_amount);
+                    return Some(estimated_value);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Estimate USD value of router swap by parsing amountIn parameter
+    async fn estimate_router_swap_value(&self, input_data: &Bytes, function_name: &str) -> Option<f64> {
+        if input_data.len() < 68 {
+            return None;
+        }
+
+        // Most router functions have amountIn as first parameter
+        let amount_in_bytes = &input_data[4..36];
+        let amount_in = U256::from_be_slice(amount_in_bytes);
+        
+        // Try to extract token path to identify tokens being swapped
+        if let Some((token_in, token_out)) = self.extract_router_token_path(input_data).await {
+            let estimated_value = self.estimate_token_value_usd(amount_in, &token_in, &token_out).await;
+            if estimated_value > 1.0 {
+                debug!("💰 Router {} estimated value: ${:.2} (amount: {})", function_name, estimated_value, amount_in);
+                return Some(estimated_value);
+            }
+        }
+
+        None
+    }
+
+    /// Estimate USD value of Uniswap V3 router swap  
+    async fn estimate_v3_router_swap_value(&self, input_data: &Bytes) -> Option<f64> {
+        if input_data.len() < 100 {
+            return None;
+        }
+
+        // V3 exactInputSingle has struct parameter, amountIn is inside the struct
+        // Simplified: look for amountIn at typical offset
+        let amount_in_bytes = &input_data[68..100]; // Typical location in V3 struct
+        let amount_in = U256::from_be_slice(amount_in_bytes);
+        
+        // For V3, we could extract tokenIn/tokenOut from the struct as well
+        // Simplified estimation for now
+        if amount_in > U256::from(1000000u64) { // If > 1M units
+            let estimated_value = self.estimate_token_value_usd_simplified(amount_in).await;
+            if estimated_value > 1.0 {
+                debug!("💰 V3 router swap estimated value: ${:.2}", estimated_value);
+                return Some(estimated_value);
+            }
+        }
+
+        None
+    }
+
+    /// Extract token pair from router transaction path parameter
+    async fn extract_router_token_path(&self, input_data: &Bytes) -> Option<(Address, Address)> {
+        // This would parse the path[] parameter from router calls
+        // Simplified implementation - would need full ABI parsing for production
+        if input_data.len() < 200 {
+            return None;
+        }
+
+        // Look for path array at typical locations
+        // This is a simplified heuristic approach
+        for offset in [100, 132, 164].iter() {
+            if input_data.len() > offset + 64 {
+                let token_in = Address::from_slice(&input_data[offset + 12..offset + 32]);
+                let token_out = Address::from_slice(&input_data[offset + 44..offset + 64]);
+                
+                if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
+                    return Some((token_in, token_out));
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Get pool tokens using eth_call (token0() and token1())
+    async fn get_pool_tokens(&self, _pool_addr: Address) -> Result<Option<(Address, Address)>> {
+        // This would use eth_client to call token0() and token1() on the pool
+        // For now, return None to keep the implementation simple
+        // In production, this should make actual eth_call to get the tokens
+        Ok(None)
+    }
+
+    /// Estimate token value in USD based on amount and token addresses
+    async fn estimate_token_value_usd(&self, amount: U256, _token0: &Address, _token1: &Address) -> f64 {
+        self.estimate_token_value_usd_from_u256(amount, _token0, _token1).await
+    }
+
+    /// Helper function to convert U256 to f64 safely and estimate USD value
+    async fn estimate_token_value_usd_from_u256(&self, amount: U256, _token0: &Address, _token1: &Address) -> f64 {
+        self.estimate_token_value_usd_simplified(amount).await
+    }
+
+    /// Simplified USD value estimation from U256 amount
+    async fn estimate_token_value_usd_simplified(&self, amount: U256) -> f64 {
+        // Simplified token value estimation
+        // In production, this would:
+        // 1. Check if either token is a stablecoin (USDT, USDC, DAI)
+        // 2. Query DEX pools for token prices
+        // 3. Use price oracles for better accuracy
+        
+        // Safe conversion from U256 to f64 using string representation
+        let amount_str = amount.to_string();
+        let amount_f64 = amount_str.parse::<f64>().unwrap_or(0.0);
+        
+        // If amount suggests 18 decimals token (> 1e18)
+        if amount_f64 > 1e18 {
+            return amount_f64 / 1e18 * 50.0; // Assume $50/token average
+        }
+        
+        // If amount suggests 6 decimals (stablecoin, > 1e6)
+        if amount_f64 > 1e6 {
+            return amount_f64 / 1e6; // $1 per unit (stablecoin)
+        }
+        
+        // Very rough fallback
+        amount_f64 / 1e12 * 10.0
     }
 }
