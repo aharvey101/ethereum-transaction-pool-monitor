@@ -93,14 +93,14 @@ pub struct MempoolConfig {
 impl Default for MempoolConfig {
     fn default() -> Self {
         Self {
-            min_tx_value_usd: 1.0, // $1 minimum transaction size (ultra low for testing)
-            max_gas_price_gwei: 200.0, // 200 gwei max gas price (higher for testing)
+            min_tx_value_usd: 1.0, // $1 minimum transaction size (broad detection)
+            max_gas_price_gwei: 200.0, // 200 gwei max gas price (mainnet suitable)
             target_protocols: vec![
                 "UniswapV2".to_string(),
                 "UniswapV3".to_string(),
                 "SushiSwap".to_string(),
             ],
-            min_profit_threshold_eth: 0.0001, // 0.0001 ETH minimum profit (very low for testing)
+            min_profit_threshold_eth: 0.0001, // 0.0001 ETH minimum profit (sensitive detection)
             max_price_impact: 0.05,           // 5% maximum price impact
             confidence_threshold: 0.7,        // 70% minimum confidence
             exit_timeout_secs: 0,             // 0 = no timeout by default
@@ -371,10 +371,6 @@ impl MempoolMonitor {
         // Check if we've already processed this transaction recently
         let now = Instant::now();
         if let Some(&last_processed) = self.processed_transactions.get(&tx_hash) {
-            //if now.duration_since(last_processed).as_secs() < 60 { // Skip if processed in last 60 seconds
-            //    debug!("🔍 Skipping tx {} - already processed recently", tx_hash);
-            //    return Ok(());
-            //}
         }
 
         // Add to processed cache
