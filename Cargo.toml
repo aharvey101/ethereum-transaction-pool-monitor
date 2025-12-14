@@ -8,34 +8,6 @@ default-run = "ethereum-transaction-pool-monitor"
 name = "ethereum-transaction-pool-monitor"
 path = "src/main.rs"
 
-[[bin]]
-name = "enhanced_pool_scanner"
-path = "src/bin/enhanced_pool_scanner.rs"
-
-[[bin]]
-name = "import_arboo_cache"
-path = "src/bin/import_arboo_cache.rs"
-
-[[bin]]
-name = "graph_pool_fetcher"
-path = "src/bin/graph_pool_fetcher.rs"
-
-[[bin]]
-name = "debug_abi_decoder"
-path = "src/bin/debug_abi_decoder.rs"
-
-[[bin]]
-name = "test_mempool"
-path = "src/bin/test_mempool.rs"
-
-[[bin]]
-name = "test_basic_rpc"
-path = "src/bin/test_basic_rpc.rs"
-
-[[bin]]
-name = "block_dex_analyzer"
-path = "src/bin/block_dex_analyzer.rs"
-
 [dependencies]
 ratatui = { version = "0.29", features = ["crossterm"] }
 crossterm = "0.28"
