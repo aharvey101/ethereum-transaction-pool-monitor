@@ -65,6 +65,10 @@ struct Cli {
     /// Enable debug mode (headless operation)
     #[arg(long)]
     debug: bool,
+
+    /// Exit after no transactions received for this many seconds (0 = never exit)
+    #[arg(long, default_value = "0")]
+    exit_timeout_secs: u64,
 }
 
 #[derive(Subcommand)]
@@ -138,9 +142,9 @@ async fn main() -> Result<()> {
         Some(Commands::Monitor) | None => {
             if debug_mode {
                 tracing::info!("Running monitor in DEBUG mode (headless)");
-                run_headless(&cli.rpc_url, &cli.db_path).await?;
+                run_headless(&cli.rpc_url, &cli.db_path, cli.exit_timeout_secs).await?;
             } else {
-                run_tui(&cli.rpc_url, &cli.db_path).await?;
+                run_tui(&cli.rpc_url, &cli.db_path, cli.exit_timeout_secs).await?;
             }
         }
         Some(Commands::Sandwich {
@@ -186,6 +190,7 @@ async fn main() -> Result<()> {
                 max_gas_price,
                 enable_flashbots,
                 simulation_only,
+                cli.exit_timeout_secs,
             )
             .await?;
         }
@@ -238,7 +243,7 @@ fn setup_logging() {
 }
 
 /// Run the TUI application
-async fn run_tui(rpc_url: &str, db_path: &str) -> Result<()> {
+async fn run_tui(rpc_url: &str, db_path: &str, exit_timeout_secs: u64) -> Result<()> {
     // Setup terminal
     if let Err(e) = enable_raw_mode() {
         return Err(anyhow::anyhow!("Failed to enable raw mode: {}", e));
@@ -307,7 +312,7 @@ async fn run_tui(rpc_url: &str, db_path: &str) -> Result<()> {
     app.needs_redraw = true;
 
     // Run the main loop
-    run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx).await?;
+    run_app(&mut terminal, &mut app, pool_loader_rx, tx_updater_rx, exit_timeout_secs).await?;
 
     // Restore terminal
     let _ = disable_raw_mode();
@@ -326,12 +331,25 @@ async fn run_app(
     app: &mut AppState,
     mut pool_loader_rx: tokio::sync::mpsc::UnboundedReceiver<pool_loader::PoolLoaderMessage>,
     mut tx_updater_rx: tokio::sync::mpsc::UnboundedReceiver<TransactionUpdateMessage>,
+    exit_timeout_secs: u64,
 ) -> io::Result<()> {
     use pool_loader::PoolLoaderMessage;
 
     // Background tasks will handle initial updates
     let _last_update = std::time::Instant::now();
     const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100); // Fast polling for responsiveness
+    
+    // Track the last time we received transactions for exit timeout
+    let mut last_transaction_time = std::time::Instant::now();
+    let exit_timeout = if exit_timeout_secs > 0 {
+        Some(Duration::from_secs(exit_timeout_secs))
+    } else {
+        None
+    };
+    
+    if let Some(timeout) = exit_timeout {
+        tracing::info!("Exit timeout enabled: will exit after {} seconds without transactions", timeout.as_secs());
+    }
 
     loop {
         tracing::trace!("Main loop iteration starting");
@@ -394,6 +412,11 @@ async fn run_app(
                         "Main: Received {} transactions from background",
                         transactions.len()
                     );
+                    
+                    // Reset transaction timeout timer when we receive transactions
+                    if !transactions.is_empty() {
+                        last_transaction_time = std::time::Instant::now();
+                    }
 
                     // Add new transactions to existing set (don't replace, just add new ones)
                     let mut added_count = 0;
@@ -496,6 +519,19 @@ async fn run_app(
             }
         }
 
+        // Check for exit timeout
+        if let Some(timeout) = exit_timeout {
+            if last_transaction_time.elapsed() > timeout {
+                tracing::warn!("No transactions received for {} seconds, exiting", timeout.as_secs());
+                app.status = format!("No transactions for {} seconds - exiting", timeout.as_secs());
+                app.needs_redraw = true;
+                // Force one final redraw to show the exit message
+                terminal.draw(|f| ui::draw(f, app))?;
+                tokio::time::sleep(Duration::from_millis(1000)).await; // Brief pause to show message
+                break;
+            }
+        }
+
         // Yield to allow background tasks to run
         tokio::task::yield_now().await;
 
@@ -579,7 +615,7 @@ async fn run_app(
 }
 
 /// Run in headless mode (no TUI, just logging)
-async fn run_headless(rpc_url: &str, db_path: &str) -> Result<()> {
+async fn run_headless(rpc_url: &str, db_path: &str, exit_timeout_secs: u64) -> Result<()> {
     // Get RPC URL from parameter
     let rpc_url = rpc_url.to_string();
 
@@ -642,13 +678,32 @@ async fn run_headless(rpc_url: &str, db_path: &str) -> Result<()> {
 
     // Run update loop
     let mut update_count = 0;
+    let mut last_transaction_time = std::time::Instant::now();
+    let exit_timeout = if exit_timeout_secs > 0 {
+        Some(Duration::from_secs(exit_timeout_secs))
+    } else {
+        None
+    };
+    
+    if let Some(timeout) = exit_timeout {
+        tracing::info!("Exit timeout enabled: will exit after {} seconds without transactions", timeout.as_secs());
+    }
+    
     loop {
         update_count += 1;
         tracing::info!("Transaction update #{}", update_count);
 
+        let previous_tx_count = app.transactions.len();
+        
         if let Err(e) = app.update_transactions().await {
             tracing::error!("Failed to fetch transactions: {}", e);
         } else {
+            // Check if we received new transactions
+            let current_tx_count = app.transactions.len();
+            if current_tx_count > 0 && current_tx_count != previous_tx_count {
+                last_transaction_time = std::time::Instant::now();
+            }
+            
             tracing::info!("Fetched {} pending transactions", app.transactions.len());
 
             // Log DEX transactions
@@ -667,6 +722,14 @@ async fn run_headless(rpc_url: &str, db_path: &str) -> Result<()> {
                     tx.value_eth,
                     tx.gas_price_gwei
                 );
+            }
+        }
+
+        // Check for exit timeout
+        if let Some(timeout) = exit_timeout {
+            if last_transaction_time.elapsed() > timeout {
+                tracing::warn!("No transactions received for {} seconds, exiting", timeout.as_secs());
+                return Ok(());
             }
         }
 
@@ -865,6 +928,7 @@ async fn run_mev_bot(
     max_gas_price_gwei: u64,
     enable_flashbots: bool,
     simulation_only: bool,
+    exit_timeout_secs: u64,
 ) -> Result<()> {
     use eth_client::EthereumClient;
     use pool_db::PoolDatabase;
@@ -900,6 +964,7 @@ async fn run_mev_bot(
         enable_flashbots: enable_flashbots && !simulation_only, // Only enable if not simulation
         signing_key: std::env::var("PRIVATE_KEY").ok(), // Get from environment
         sandwich_contract_address: Some("0x79E2a11cD852479c91C63660F69A9b1e7bA5dfE8".to_string()), // Working deployed contract (needs ultra-aggressive upgrade)
+        exit_timeout_secs: exit_timeout_secs,
     };
 
     // Determine execution method
@@ -914,6 +979,11 @@ async fn run_mev_bot(
     println!("   • Max Gas Price: {} gwei", max_gas_price_gwei);
     println!("   • Execution Mode: {}", execution_mode);
     println!("   • Stats Interval: {}s", config.stats_interval_seconds);
+    if exit_timeout_secs > 0 {
+        println!("   • Exit Timeout: {}s", exit_timeout_secs);
+    } else {
+        println!("   • Exit Timeout: disabled");
+    }
 
     if execution_mode == "Simulation Only" {
         println!("📝 Running in SIMULATION mode - no actual transactions will be sent");

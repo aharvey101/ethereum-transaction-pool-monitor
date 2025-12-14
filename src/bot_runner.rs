@@ -38,6 +38,7 @@ pub struct BotConfig {
     pub enable_flashbots: bool,
     pub signing_key: Option<String>,
     pub sandwich_contract_address: Option<String>, // Deployed sandwich contract
+    pub exit_timeout_secs: u64, // Exit after no transactions for this many seconds
 }
 
 impl Default for BotConfig {
@@ -57,6 +58,7 @@ impl Default for BotConfig {
             enable_flashbots: false, // Start with simulation mode
             signing_key: None,
             sandwich_contract_address: None,
+            exit_timeout_secs: 0, // 0 = no timeout by default
         }
     }
 }
@@ -208,13 +210,14 @@ impl MevBotRunner {
             min_profit_threshold_eth: self.config.min_profit_threshold,
             max_price_impact: 0.05, // 5%
             confidence_threshold: self.config.confidence_threshold as f32,
+            exit_timeout_secs: self.config.exit_timeout_secs,
         };
 
         // Start mempool monitoring
         let (mempool_monitor, opportunity_rx) =
             MempoolMonitor::new(&self.rpc_url, &self.db_path, mempool_config).await?;
 
-        let mempool_task = {
+        let mut mempool_task = {
             let mut monitor = mempool_monitor;
             tokio::spawn(async move {
                 if let Err(e) = monitor.start_monitoring().await {
@@ -273,7 +276,7 @@ impl MevBotRunner {
 
         info!("All MEV bot components started successfully");
 
-        // Wait for shutdown signal
+        // Wait for shutdown signal or mempool monitor exit (timeout)
         select! {
             _ = shutdown_rx.recv() => {
                 info!("Shutdown signal received");
@@ -281,11 +284,30 @@ impl MevBotRunner {
             _ = tokio::signal::ctrl_c() => {
                 info!("Ctrl+C received, shutting down gracefully");
             }
+            result = &mut mempool_task => {
+                match result {
+                    Ok(_) => {
+                        if self.config.exit_timeout_secs > 0 {
+                            info!("Mempool monitor exited due to timeout ({}s), shutting down MEV bot", self.config.exit_timeout_secs);
+                        } else {
+                            info!("Mempool monitor exited, shutting down MEV bot");
+                        }
+                    }
+                    Err(e) => {
+                        error!("Mempool monitor task failed: {}", e);
+                    }
+                }
+            }
         }
 
         // Graceful shutdown
         info!("Stopping MEV bot...");
-        mempool_task.abort();
+        
+        // Only abort mempool task if it hasn't finished yet
+        if !mempool_task.is_finished() {
+            mempool_task.abort();
+        }
+        
         opportunity_task.abort();
         bundle_task.abort();
         stats_task.abort();

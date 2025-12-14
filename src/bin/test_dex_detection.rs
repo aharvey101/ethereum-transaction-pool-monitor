@@ -9,8 +9,9 @@
 
 use ethereum_transaction_pool_monitor::{
     mempool_monitor::{MempoolMonitor, MempoolConfig},
+    eth_client::EthereumClient,
 };
-use alloy_primitives::{Address, Bytes};
+use alloy_primitives::{Address, Bytes, TxHash};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::str::FromStr;
@@ -63,6 +64,18 @@ enum Commands {
     },
     /// Test function selectors
     TestSelectors,
+    /// Test with a specific transaction hash from blockchain
+    TestTransaction {
+        /// Transaction hash to fetch and analyze
+        #[arg(long)]
+        hash: String,
+    },
+    /// Test router detection with specific address
+    TestRouter {
+        /// Router address to test
+        #[arg(long)]
+        address: String,
+    },
 }
 
 #[derive(Debug)]
@@ -90,6 +103,11 @@ async fn main() -> Result<()> {
         Commands::LiveMempool { count, dex_only } => test_live_mempool(&cli, *count, *dex_only).await,
         Commands::AnalyzeInput { input, from, to } => analyze_transaction_input(&cli, input, from, to).await,
         Commands::TestSelectors => test_function_selectors(&cli).await,
+        Commands::TestTransaction { hash: _hash } => {
+            error!("Transaction testing temporarily disabled due to alloy type issues");
+            Ok(())
+        },
+        Commands::TestRouter { address } => test_router_detection(&cli, address).await,
     }
 }
 
@@ -160,7 +178,7 @@ async fn test_sample_transactions(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-async fn test_live_mempool(cli: &Cli, count: usize, dex_only: bool) -> Result<()> {
+async fn test_live_mempool(cli: &Cli, count: usize, _dex_only: bool) -> Result<()> {
     info!("🔴 Live mempool testing with {} transactions", count);
     
     let config = MempoolConfig::default();
@@ -208,7 +226,7 @@ async fn analyze_transaction_input(cli: &Cli, input: &str, from: &str, to: &str)
     Ok(())
 }
 
-async fn test_function_selectors(cli: &Cli) -> Result<()> {
+async fn test_function_selectors(_cli: &Cli) -> Result<()> {
     info!("🔧 Testing function selector recognition...");
 
     let known_selectors = vec![
@@ -234,6 +252,50 @@ async fn test_function_selectors(cli: &Cli) -> Result<()> {
     }
 
     info!("✅ Function selector test complete");
+
+    Ok(())
+}
+
+/*
+async fn test_specific_transaction(cli: &Cli, hash: &str) -> Result<()> {
+    // Temporarily disabled due to alloy type complications
+    info!("Transaction testing temporarily disabled");
+    Ok(())
+}
+*/
+
+async fn test_router_detection(cli: &Cli, address: &str) -> Result<()> {
+    info!("🔍 Testing router detection for address: {}", address);
+    
+    // We need to create a PoolDatabase to test router detection
+    use ethereum_transaction_pool_monitor::pool_db::PoolDatabase;
+    let pool_db = PoolDatabase::new(&cli.db_path)?;
+    
+    info!("🔧 Testing address: {}", address);
+    let is_router = pool_db.is_dex_router(address);
+    
+    if is_router {
+        info!("✅ Address {} IS recognized as a DEX router", address);
+    } else {
+        info!("❌ Address {} is NOT recognized as a DEX router", address);
+    }
+    
+    // Let's also show all supported routers for reference
+    info!("🔧 All supported DEX routers:");
+    let routers = [
+        ("0x7a250d5630b4cf539739df2c5dacb4c659f2488d", "Uniswap V2 Router"),
+        ("0xe592427a0aece92de3edee1f18e0157c05861564", "Uniswap V3 SwapRouter"),
+        ("0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "Uniswap V3 SwapRouter02"),
+        ("0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f", "SushiSwap Router"),
+        ("0x1111111254eeb25477b68fb85ed929f73a960582", "1inch Router V5"),
+    ];
+    
+    for (router_addr, name) in &routers {
+        info!("  {} - {}", router_addr, name);
+        if address.to_lowercase() == router_addr.to_lowercase() {
+            info!("  ☝️  This is the address you tested!");
+        }
+    }
 
     Ok(())
 }

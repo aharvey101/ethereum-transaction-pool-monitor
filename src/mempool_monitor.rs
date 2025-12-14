@@ -5,13 +5,13 @@
 use crate::{
     eth_client::EthereumClient, pool_db::PoolDatabase, sandwich_pool_integration::SandwichTarget,
 };
-use alloy_primitives::{hex::FromHex, Address, Bytes, U256, keccak256};
+use alloy_primitives::{hex::FromHex, keccak256, Address, Bytes, U256};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-use std::time::{SystemTime, Instant};
+use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -87,6 +87,7 @@ pub struct MempoolConfig {
     pub min_profit_threshold_eth: f64,
     pub max_price_impact: f64,
     pub confidence_threshold: f32,
+    pub exit_timeout_secs: u64,
 }
 
 impl Default for MempoolConfig {
@@ -102,6 +103,7 @@ impl Default for MempoolConfig {
             min_profit_threshold_eth: 0.0001, // 0.0001 ETH minimum profit (very low for testing)
             max_price_impact: 0.05,           // 5% maximum price impact
             confidence_threshold: 0.7,        // 70% minimum confidence
+            exit_timeout_secs: 0,             // 0 = no timeout by default
         }
     }
 }
@@ -208,11 +210,28 @@ impl MempoolMonitor {
             self.config.target_protocols
         );
 
+        // Setup exit timeout if enabled
+        let exit_timeout = if self.config.exit_timeout_secs > 0 {
+            Some(std::time::Duration::from_secs(
+                self.config.exit_timeout_secs,
+            ))
+        } else {
+            None
+        };
+
+        if let Some(timeout) = exit_timeout {
+            info!(
+                "⏰ Exit timeout enabled: will exit after {} seconds without transactions",
+                timeout.as_secs()
+            );
+        }
+
         debug!("🔧 Debug: About to start subscription loop");
 
         // Subscribe to mempool transactions via WebSocket with polling fallback
         let mut websocket_timeout_count = 0;
         let max_websocket_timeouts = 3; // Try WebSocket 3 times before falling back
+        let mut last_transaction_time = std::time::Instant::now();
 
         loop {
             debug!("📡 Attempting to subscribe to pending transactions stream...");
@@ -232,7 +251,8 @@ impl MempoolMonitor {
                                         // Reset timeout counters when we receive transactions
                                         websocket_timeout_count = 0;
                                         no_activity_timer = tokio::time::Instant::now();
-                                        
+                                        last_transaction_time = std::time::Instant::now();
+
                                         //info!("📨 Processing new pending transaction: {}", tx_hash);
                                         let tx_hash_for_debug = tx_hash.clone();
 
@@ -249,11 +269,19 @@ impl MempoolMonitor {
 
                             // Check for WebSocket inactivity (no transactions received)
                             _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                                // Check for exit timeout first
+                                if let Some(timeout) = exit_timeout {
+                                    if last_transaction_time.elapsed() > timeout {
+                                        warn!("⏰ No transactions received for {} seconds, exiting", timeout.as_secs());
+                                        return Ok(());
+                                    }
+                                }
+
                                 if no_activity_timer.elapsed() > tokio::time::Duration::from_secs(30) {
                                     websocket_timeout_count += 1;
-                                    warn!("⏰ WebSocket connected but no transactions received for 30s (timeout {}/{})", 
+                                    warn!("⏰ WebSocket connected but no transactions received for 30s (timeout {}/{})",
                                           websocket_timeout_count, max_websocket_timeouts);
-                                    
+
                                     if websocket_timeout_count >= max_websocket_timeouts {
                                         warn!("🔄 Switching to polling fallback due to WebSocket inactivity");
                                         break; // Exit to try polling
@@ -277,18 +305,22 @@ impl MempoolMonitor {
 
             // If WebSocket has failed too many times, try polling fallback
             if websocket_timeout_count >= max_websocket_timeouts {
-                warn!("📊 WebSocket failed {} times, trying polling fallback...", websocket_timeout_count);
-                
+                warn!(
+                    "📊 WebSocket failed {} times, trying polling fallback...",
+                    websocket_timeout_count
+                );
+
                 match self.eth_client.poll_pending_transactions().await {
                     Ok(mut tx_stream) => {
                         info!("✅ Successfully started transaction polling fallback");
-                        
+
                         // Process transactions from polling
                         loop {
                             tokio::select! {
                                 tx_result = tx_stream.recv() => {
                                     match tx_result {
                                         Some(tx_hash) => {
+                                            last_transaction_time = std::time::Instant::now(); // Reset timeout for polling too
                                             //info!("📨 Processing polled transaction: {}", tx_hash);
                                             let tx_hash_for_debug = tx_hash.clone();
 
@@ -303,15 +335,25 @@ impl MempoolMonitor {
                                     }
                                 }
 
-                                // Print stats every 30 seconds
+                                // Print stats every 30 seconds and check for exit timeout
                                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
+                                    // Check for exit timeout first
+                                    if let Some(timeout) = exit_timeout {
+                                        if last_transaction_time.elapsed() > timeout {
+                                            warn!("⏰ No transactions received for {} seconds, exiting", timeout.as_secs());
+                                            return Ok(());
+                                        }
+                                    }
                                     self.print_monitoring_stats();
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        error!("❌ Failed to start polling fallback: {}. Retrying WebSocket...", e);
+                        error!(
+                            "❌ Failed to start polling fallback: {}. Retrying WebSocket...",
+                            e
+                        );
                         websocket_timeout_count = 0; // Reset and try WebSocket again
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
@@ -329,19 +371,18 @@ impl MempoolMonitor {
         // Check if we've already processed this transaction recently
         let now = Instant::now();
         if let Some(&last_processed) = self.processed_transactions.get(&tx_hash) {
-            if now.duration_since(last_processed).as_secs() < 60 { // Skip if processed in last 60 seconds
-                debug!("🔍 Skipping tx {} - already processed recently", tx_hash);
-                return Ok(());
-            }
+            //if now.duration_since(last_processed).as_secs() < 60 { // Skip if processed in last 60 seconds
+            //    debug!("🔍 Skipping tx {} - already processed recently", tx_hash);
+            //    return Ok(());
+            //}
         }
-        
+
         // Add to processed cache
         self.processed_transactions.insert(tx_hash.clone(), now);
-        
+
         // Clean old entries from cache (older than 5 minutes)
-        self.processed_transactions.retain(|_, &mut timestamp| {
-            now.duration_since(timestamp).as_secs() < 300
-        });
+        self.processed_transactions
+            .retain(|_, &mut timestamp| now.duration_since(timestamp).as_secs() < 300);
 
         self.stats.total_transactions_seen += 1;
 
@@ -370,7 +411,8 @@ impl MempoolMonitor {
         if !self.known_pools.contains(&target_address) {
             // Check if this is a router transaction before skipping
             let target_string = format!("{:#x}", target_address);
-            let is_router = self.pool_db.is_dex_router(&target_string) || self.is_major_dex_router(&target_address);
+            let is_router = self.pool_db.is_dex_router(&target_string)
+                || self.is_major_dex_router(&target_address);
 
             if is_router {
                 info!(
@@ -480,30 +522,44 @@ impl MempoolMonitor {
         &mut self,
         victim_tx: MempoolTransaction,
     ) -> Result<Option<MempoolOpportunity>> {
-        let opportunity_id = format!("opp_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-        
+        let opportunity_id = format!(
+            "opp_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
+
         info!("🔍 === SANDWICH OPPORTUNITY ANALYSIS STARTED ===");
         info!("📊 Analysis ID: {}", opportunity_id);
         info!("🎯 VICTIM TRANSACTION DETAILS:");
         info!("   - TX Hash: {}", victim_tx.hash);
         info!("   - From: {}", victim_tx.from);
         info!("   - To: {:?}", victim_tx.to);
-        info!("   - Value: {} wei ({} ETH)", victim_tx.value, victim_tx.value.to::<u128>() as f64 / 1e18);
-        info!("   - Gas Price: {} wei ({} gwei)", victim_tx.gas_price, victim_tx.gas_price.to::<u128>() as f64 / 1e9);
+        info!(
+            "   - Value: {} wei ({} ETH)",
+            victim_tx.value,
+            victim_tx.value.to::<u128>() as f64 / 1e18
+        );
+        info!(
+            "   - Gas Price: {} wei ({} gwei)",
+            victim_tx.gas_price,
+            victim_tx.gas_price.to::<u128>() as f64 / 1e9
+        );
         info!("   - Gas Limit: {}", victim_tx.gas_limit);
         info!("   - Nonce: {}", victim_tx.nonce);
         info!("   - Input Data Length: {} bytes", victim_tx.input.len());
         info!("   - Is DEX: {}", victim_tx.is_dex_interaction);
-        
+
         let pool_address = match victim_tx.target_pool {
             Some(addr) => {
                 info!("   - Target Pool: {:#x}", addr);
                 addr
-            },
+            }
             None => {
                 info!("   - No target pool identified, skipping analysis");
                 return Ok(None);
-            },
+            }
         };
 
         // Create sandwich target for simulation
@@ -515,14 +571,20 @@ impl MempoolMonitor {
             "✅ Successfully created sandwich target for pool: {:#x}",
             pool_address
         );
-        
+
         info!("📊 SANDWICH TARGET DETAILS:");
         info!("   - Pool Address: {}", mock_target.pool.address);
         info!("   - Pool Protocol: {}", mock_target.pool.protocol);
         info!("   - Token0: {}", mock_target.pool.token0);
         info!("   - Token1: {}", mock_target.pool.token1);
-        info!("   - Recommended Frontrun: {} wei", mock_target.recommended_frontrun_amount);
-        info!("   - Trade Direction: {:?}", mock_target.victim_trade_direction);
+        info!(
+            "   - Recommended Frontrun: {} wei",
+            mock_target.recommended_frontrun_amount
+        );
+        info!(
+            "   - Trade Direction: {:?}",
+            mock_target.victim_trade_direction
+        );
 
         // Simulate the sandwich attack (temporarily mocked to avoid simulator hang)
         info!(
@@ -530,53 +592,65 @@ impl MempoolMonitor {
             victim_tx.hash
         );
 
-         // Get pool details from database for realistic simulation
-         let pool_details = match self
-             .pool_db
-             .get_pool_by_address(&format!("{:#x}", pool_address))
-         {
-             Ok(Some(pool)) => pool,
-             Ok(None) => {
-                 info!("Pool not found in database, attempting on-chain verification: {:#x}", pool_address);
-                 
-                 // Fallback: Try to verify pool exists on-chain and get its tokens
-                 let pool_addr_str = format!("{:#x}", pool_address);
-                 match self.eth_client.get_pool_tokens(&pool_addr_str).await {
-                     Ok(Some((token0, token1))) => {
-                         info!("✅ Verified pool on-chain: {} (tokens: {} -> {})", pool_addr_str, token0, token1);
-                         
-                         // Create a temporary pool record for simulation
-                         use crate::pool_db::DexPool;
-                         let temp_pool = DexPool {
-                             address: pool_addr_str.clone(),
-                             protocol: "Unknown".to_string(),  // We'll determine protocol later
-                             token0: Some(token0),
-                             token1: Some(token1),
-                             chain_id: 1,
-                         };
-                         
-                         // Try to add to database for future lookups  
-                         if let Err(e) = self.pool_db.insert_pool(&temp_pool) {
-                             warn!("Failed to insert verified pool: {} - {}", pool_addr_str, e);
-                         }
-                         
-                         temp_pool
-                     },
-                     Ok(None) => {
-                         warn!("Pool address has no code or invalid tokens: {:#x}", pool_address);
-                         return Ok(None);
-                     },
-                     Err(e) => {
-                         error!("Failed to verify pool on-chain: {:#x} - {}", pool_address, e);
-                         return Ok(None);
-                     }
-                 }
-             }
-             Err(e) => {
-                 error!("Failed to query pool database: {}", e);
-                 return Ok(None);
-             }
-         };
+        // Get pool details from database for realistic simulation
+        let pool_details = match self
+            .pool_db
+            .get_pool_by_address(&format!("{:#x}", pool_address))
+        {
+            Ok(Some(pool)) => pool,
+            Ok(None) => {
+                info!(
+                    "Pool not found in database, attempting on-chain verification: {:#x}",
+                    pool_address
+                );
+
+                // Fallback: Try to verify pool exists on-chain and get its tokens
+                let pool_addr_str = format!("{:#x}", pool_address);
+                match self.eth_client.get_pool_tokens(&pool_addr_str).await {
+                    Ok(Some((token0, token1))) => {
+                        info!(
+                            "✅ Verified pool on-chain: {} (tokens: {} -> {})",
+                            pool_addr_str, token0, token1
+                        );
+
+                        // Create a temporary pool record for simulation
+                        use crate::pool_db::DexPool;
+                        let temp_pool = DexPool {
+                            address: pool_addr_str.clone(),
+                            protocol: "Unknown".to_string(), // We'll determine protocol later
+                            token0: Some(token0),
+                            token1: Some(token1),
+                            chain_id: 1,
+                        };
+
+                        // Try to add to database for future lookups
+                        if let Err(e) = self.pool_db.insert_pool(&temp_pool) {
+                            warn!("Failed to insert verified pool: {} - {}", pool_addr_str, e);
+                        }
+
+                        temp_pool
+                    }
+                    Ok(None) => {
+                        warn!(
+                            "Pool address has no code or invalid tokens: {:#x}",
+                            pool_address
+                        );
+                        return Ok(None);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to verify pool on-chain: {:#x} - {}",
+                            pool_address, e
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to query pool database: {}", e);
+                return Ok(None);
+            }
+        };
 
         // Run basic sandwich simulation using pool state fetcher
         let simulation_result = match self
@@ -720,13 +794,18 @@ impl MempoolMonitor {
         let is_dex = to_addr.map_or(false, |addr| {
             let addr_string = format!("{:#x}", addr); // Use hex format like 0x1234...
             let is_pool = self.known_pools.contains(&addr);
-            let is_router = self.pool_db.is_dex_router(&addr_string) || self.is_major_dex_router(&addr);
+            let is_router =
+                self.pool_db.is_dex_router(&addr_string) || self.is_major_dex_router(&addr);
 
             // Log every transaction with value > $1 for debugging
             if estimated_value_usd > 1.0 {
                 info!(
                     "🔍 Transaction to: {} (${:.2}) - Pool: {}, Router: {}, Input: {} bytes",
-                    addr_string, estimated_value_usd, is_pool, is_router, input.len()
+                    addr_string,
+                    estimated_value_usd,
+                    is_pool,
+                    is_router,
+                    input.len()
                 );
             }
 
@@ -781,27 +860,33 @@ impl MempoolMonitor {
         let pools = self
             .pool_db
             .get_pools_by_address(&pool_address.to_string())?;
-        
+
         // Try to get pool from database first, if not found, fetch it proactively
         let pool_info = if let Some(pool) = pools.first() {
             info!("💾 Using cached pool data for: {:#x}", pool_address);
             pool.clone()
         } else {
-            info!("🔄 Pool not in database, fetching live data for: {:#x}", pool_address);
-            
+            info!(
+                "🔄 Pool not in database, fetching live data for: {:#x}",
+                pool_address
+            );
+
             // Use PoolStateFetcher to get live pool data
             use crate::pool_state_fetcher::PoolStateFetcher;
             let pool_fetcher = PoolStateFetcher::new("http://192.168.0.14:8545").await?;
-            
+
             // Try different protocols - start with UniswapV2 as most common
             let protocols_to_try = ["UniswapV2", "SushiSwap", "UniswapV3"];
             let mut fetched_pool_info = None;
-            
+
             for protocol in protocols_to_try.iter() {
                 match pool_fetcher.fetch_pool_state(pool_address, protocol).await {
                     Ok(pool_state) => {
-                        info!("✅ Successfully fetched {} pool data for: {:#x}", protocol, pool_address);
-                        
+                        info!(
+                            "✅ Successfully fetched {} pool data for: {:#x}",
+                            protocol, pool_address
+                        );
+
                         // Create DexPool from fetched data and store in database
                         let pool_info = crate::pool_db::DexPool {
                             address: pool_address.to_string(),
@@ -810,26 +895,35 @@ impl MempoolMonitor {
                             token1: Some(pool_state.token1.to_string()),
                             chain_id: 1, // Mainnet
                         };
-                        
+
                         // Store in database for future use
-                         if let Err(e) = self.pool_db.insert_pool(&pool_info) {
+                        if let Err(e) = self.pool_db.insert_pool(&pool_info) {
                             warn!("Failed to cache fetched pool data: {}", e);
                         } else {
-                            info!("💾 Cached new pool data for future use: {:#x}", pool_address);
+                            info!(
+                                "💾 Cached new pool data for future use: {:#x}",
+                                pool_address
+                            );
                         }
-                        
+
                         fetched_pool_info = Some(pool_info);
                         break;
                     }
                     Err(_) => {
-                        debug!("❌ Failed to fetch as {} pool: {:#x}", protocol, pool_address);
+                        debug!(
+                            "❌ Failed to fetch as {} pool: {:#x}",
+                            protocol, pool_address
+                        );
                         continue;
                     }
                 }
             }
-            
+
             fetched_pool_info.ok_or_else(|| {
-                anyhow::anyhow!("Could not fetch pool data from any protocol for: {:#x}", pool_address)
+                anyhow::anyhow!(
+                    "Could not fetch pool data from any protocol for: {:#x}",
+                    pool_address
+                )
             })?
         };
 
@@ -837,13 +931,21 @@ impl MempoolMonitor {
         let pool_state = crate::sandwich_pool_integration::PoolState {
             address: pool_address,
             protocol: pool_info.protocol.clone(),
-            token0: pool_info.token0.as_ref().unwrap_or(&"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string()).parse()?,
-            token1: pool_info.token1.as_ref().unwrap_or(&"0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string()).parse()?,
+            token0: pool_info
+                .token0
+                .as_ref()
+                .unwrap_or(&"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2".to_string())
+                .parse()?,
+            token1: pool_info
+                .token1
+                .as_ref()
+                .unwrap_or(&"0xdAC17F958D2ee523a2206206994597C13D831ec7".to_string())
+                .parse()?,
             fee: 3000, // Default 0.3% fee - will be fetched properly in future iterations
             reserve0: U256::from(1000000000000000000000000_u128), // Will be updated by simulation
-            reserve1: U256::from(1000000000000_u128),             // Will be updated by simulation
-            block_number: 0,                                      // Will be updated by simulation  
-            total_liquidity_usd: 100000.0,                       // Will be updated by simulation
+            reserve1: U256::from(1000000000000_u128), // Will be updated by simulation
+            block_number: 0, // Will be updated by simulation
+            total_liquidity_usd: 100000.0, // Will be updated by simulation
         };
 
         Ok(SandwichTarget {
@@ -906,10 +1008,13 @@ impl MempoolMonitor {
 
         // Extract function selector (first 4 bytes)
         let function_selector = &input_data[0..4];
-        
+
         // Only log for debugging when needed (reduce noise)
-        debug!("🔍 Function selector: 0x{} ({})", 
-               hex::encode(function_selector), input_data.len());
+        debug!(
+            "🔍 Function selector: 0x{} ({})",
+            hex::encode(function_selector),
+            input_data.len()
+        );
 
         // Comprehensive DEX function selectors
         match function_selector {
@@ -924,9 +1029,9 @@ impl MempoolMonitor {
             [0x88, 0x19, 0xcc, 0x46] => self.extract_token_pair_simple(&input_data[4..]).await, // swapETHForExactTokens
             [0x85, 0x83, 0x59, 0x86] => self.extract_token_pair_simple(&input_data[4..]).await, // swapTokensForExactTokens
 
-            // Uniswap V3 Router Functions  
-            [0x41, 0x4b, 0xf3, 0x89] => self.extract_v3_token_pair(&input_data[4..]).await,     // exactInputSingle
-            [0xdb, 0x3e, 0x21, 0x98] => self.extract_v3_token_pair(&input_data[4..]).await,     // exactOutputSingle
+            // Uniswap V3 Router Functions
+            [0x41, 0x4b, 0xf3, 0x89] => self.extract_v3_token_pair(&input_data[4..]).await, // exactInputSingle
+            [0xdb, 0x3e, 0x21, 0x98] => self.extract_v3_token_pair(&input_data[4..]).await, // exactOutputSingle
             [0xc0, 0x4b, 0x8d, 0x59] => self.extract_token_pair_simple(&input_data[4..]).await, // exactInput (multi-hop)
             [0xf2, 0x8c, 0x04, 0x98] => self.extract_token_pair_simple(&input_data[4..]).await, // exactOutput (multi-hop)
 
@@ -952,8 +1057,10 @@ impl MempoolMonitor {
 
             // For unrecognized functions, try simple token extraction anyway
             _ => {
-                debug!("🔍 Attempting fallback parsing for unknown function: 0x{}", 
-                       alloy_primitives::hex::encode(function_selector));
+                debug!(
+                    "🔍 Attempting fallback parsing for unknown function: 0x{}",
+                    alloy_primitives::hex::encode(function_selector)
+                );
                 // Try generic token pair extraction for unknown functions
                 self.extract_token_pair_simple(&input_data[4..]).await
             }
@@ -964,7 +1071,8 @@ impl MempoolMonitor {
     async fn parse_uniswap_v2_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
         // V2 swaps typically have: amountIn, amountOutMin, path[], to, deadline
         // Path is usually the 3rd parameter
-        if params_data.len() < 160 { // 5 parameters * 32 bytes
+        if params_data.len() < 160 {
+            // 5 parameters * 32 bytes
             debug!("V2 swap data too short: {} bytes", params_data.len());
             return self.extract_token_pair_simple(params_data).await;
         }
@@ -982,7 +1090,8 @@ impl MempoolMonitor {
     async fn parse_uniswap_v2_eth_swap(&self, params_data: &[u8]) -> Result<Option<Address>> {
         // ETH swaps typically have: amountOutMin, path[], to, deadline
         // Path is usually the 2nd parameter
-        if params_data.len() < 128 { // 4 parameters * 32 bytes
+        if params_data.len() < 128 {
+            // 4 parameters * 32 bytes
             debug!("V2 ETH swap data too short: {} bytes", params_data.len());
             return self.extract_token_pair_simple(params_data).await;
         }
@@ -997,15 +1106,21 @@ impl MempoolMonitor {
     }
 
     /// Try to extract path array at a specific offset
-    async fn try_extract_path_at_offset(&self, params_data: &[u8], path_offset: usize) -> Result<Option<Address>> {
+    async fn try_extract_path_at_offset(
+        &self,
+        params_data: &[u8],
+        path_offset: usize,
+    ) -> Result<Option<Address>> {
         if params_data.len() <= path_offset + 32 {
             return Ok(None);
         }
 
         // Read the offset to the actual path data
         let path_data_offset = u32::from_be_bytes([
-            params_data[path_offset + 28], params_data[path_offset + 29],
-            params_data[path_offset + 30], params_data[path_offset + 31]
+            params_data[path_offset + 28],
+            params_data[path_offset + 29],
+            params_data[path_offset + 30],
+            params_data[path_offset + 31],
         ]) as usize;
 
         if path_data_offset >= params_data.len() || path_data_offset + 32 >= params_data.len() {
@@ -1015,8 +1130,10 @@ impl MempoolMonitor {
 
         // Read array length
         let array_len = u32::from_be_bytes([
-            params_data[path_data_offset + 28], params_data[path_data_offset + 29],
-            params_data[path_data_offset + 30], params_data[path_data_offset + 31]
+            params_data[path_data_offset + 28],
+            params_data[path_data_offset + 29],
+            params_data[path_data_offset + 30],
+            params_data[path_data_offset + 31],
         ]);
 
         if array_len < 2 || array_len > 10 {
@@ -1028,15 +1145,20 @@ impl MempoolMonitor {
         let required_bytes = array_len as usize * 32;
 
         if array_start + required_bytes > params_data.len() {
-            debug!("Path array extends beyond data: need {} bytes, have {}", 
-                   array_start + required_bytes, params_data.len());
+            debug!(
+                "Path array extends beyond data: need {} bytes, have {}",
+                array_start + required_bytes,
+                params_data.len()
+            );
             return Ok(None);
         }
 
         // Extract first and last tokens
-        if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], array_len) {
-             debug!("Extracted tokens from path: {} -> {}", token0, token1);
-             return self.calculate_pool_address_enhanced(token0, token1).await;
+        if let Some((token0, token1)) =
+            self.extract_path_tokens(&params_data[array_start..], array_len)
+        {
+            debug!("Extracted tokens from path: {} -> {}", token0, token1);
+            return self.calculate_pool_address_enhanced(token0, token1).await;
         }
 
         Ok(None)
@@ -1067,14 +1189,17 @@ impl MempoolMonitor {
     }
 
     /// Try extracting token addresses from the first few parameter slots
-    async fn try_extract_from_first_parameters(&self, params_data: &[u8]) -> Result<Option<Address>> {
+    async fn try_extract_from_first_parameters(
+        &self,
+        params_data: &[u8],
+    ) -> Result<Option<Address>> {
         if params_data.len() < 64 {
             return Ok(None);
         }
 
         // Extract potential addresses from first 4 parameter slots
         let mut potential_tokens = Vec::new();
-        
+
         for i in 0..4 {
             let offset = i * 32;
             if offset + 32 <= params_data.len() {
@@ -1088,10 +1213,12 @@ impl MempoolMonitor {
             }
         }
 
-         // If we found 2+ potential tokens, try to create pool from first two
-         if potential_tokens.len() >= 2 {
-             return self.calculate_pool_address_enhanced(potential_tokens[0], potential_tokens[1]).await;
-         }
+        // If we found 2+ potential tokens, try to create pool from first two
+        if potential_tokens.len() >= 2 {
+            return self
+                .calculate_pool_address_enhanced(potential_tokens[0], potential_tokens[1])
+                .await;
+        }
 
         Ok(None)
     }
@@ -1107,22 +1234,28 @@ impl MempoolMonitor {
             if offset + 96 <= params_data.len() {
                 // Check if this could be an array length
                 let potential_len = u32::from_be_bytes([
-                    params_data[offset + 28], params_data[offset + 29], 
-                    params_data[offset + 30], params_data[offset + 31]
+                    params_data[offset + 28],
+                    params_data[offset + 29],
+                    params_data[offset + 30],
+                    params_data[offset + 31],
                 ]);
-                
+
                 // Valid path arrays typically have 2-10 tokens
                 if potential_len >= 2 && potential_len <= 10 {
                     let array_start = offset + 32;
                     let required_bytes = potential_len as usize * 32;
-                    
+
                     if array_start + required_bytes <= params_data.len() {
                         // Try to extract first and last addresses from path
-                         if let Some((token0, token1)) = self.extract_path_tokens(&params_data[array_start..], potential_len) {
-                             if let Some(pool) = self.calculate_pool_address_enhanced(token0, token1).await? {
-                                 return Ok(Some(pool));
-                             }
-                         }
+                        if let Some((token0, token1)) =
+                            self.extract_path_tokens(&params_data[array_start..], potential_len)
+                        {
+                            if let Some(pool) =
+                                self.calculate_pool_address_enhanced(token0, token1).await?
+                            {
+                                return Ok(Some(pool));
+                            }
+                        }
                     }
                 }
             }
@@ -1138,7 +1271,7 @@ impl MempoolMonitor {
 
         // Extract first token (first 32 bytes, last 20 bytes are the address)
         let token0 = Address::from_slice(&array_data[12..32]);
-        
+
         // Extract last token
         let last_offset = ((length - 1) as usize) * 32;
         if array_data.len() < last_offset + 32 {
@@ -1175,60 +1308,64 @@ impl MempoolMonitor {
         }
 
         // If we found at least 2 unique tokens, try to find a pool
-         if found_tokens.len() >= 2 {
-             return self.calculate_pool_address_enhanced(found_tokens[0], found_tokens[1]).await;
+        if found_tokens.len() >= 2 {
+            return self
+                .calculate_pool_address_enhanced(found_tokens[0], found_tokens[1])
+                .await;
         }
 
         Ok(None)
     }
 
     /// Check if an address is likely to be a token contract
-     fn is_likely_token_address(&self, addr: Address) -> bool {
-         // Filter out obvious non-token addresses
-         if addr.is_zero() {
-             return false;
-         }
+    fn is_likely_token_address(&self, addr: Address) -> bool {
+        // Filter out obvious non-token addresses
+        if addr.is_zero() {
+            return false;
+        }
 
-         let addr_bytes = addr.as_slice();
-         
-         // Exclude addresses that are likely to be EOAs or malformed (too many leading zeros)
-         // Real token addresses should not have more than 4-5 consecutive leading zero bytes
-         let leading_zeros = addr_bytes.iter().take_while(|&&b| b == 0).count();
-         if leading_zeros > 5 {
-             return false;
-         }
+        let addr_bytes = addr.as_slice();
 
-         // Exclude addresses that look like numeric values rather than proper addresses
-         // Check if the address has patterns that suggest it's not a real contract address
-         
-         // Pattern 1: Addresses with alternating zero bytes (common in numeric data)
-         let zero_byte_count = addr_bytes.iter().filter(|&&b| b == 0).count();
-         if zero_byte_count > 14 { // More than 14 zero bytes out of 20 is suspicious
-             return false;
-         }
+        // Exclude addresses that are likely to be EOAs or malformed (too many leading zeros)
+        // Real token addresses should not have more than 4-5 consecutive leading zero bytes
+        let leading_zeros = addr_bytes.iter().take_while(|&&b| b == 0).count();
+        if leading_zeros > 5 {
+            return false;
+        }
 
-         // Pattern 2: Check for obvious non-address patterns (all same byte, sequential patterns)
-         let unique_bytes: std::collections::HashSet<u8> = addr_bytes.iter().cloned().collect();
-         if unique_bytes.len() < 3 { // Too few unique bytes suggests numeric data
-             return false;
-         }
+        // Exclude addresses that look like numeric values rather than proper addresses
+        // Check if the address has patterns that suggest it's not a real contract address
 
-         // Pattern 3: Exclude known contract patterns that are not tokens
-         let addr_str = format!("{:#x}", addr).to_lowercase();
-         
-         // Exclude common non-token contract patterns
-         if addr_str.ends_with("00000000") && addr_str.len() == 42 {
-             return false; // Likely a numeric value, not an address
-         }
+        // Pattern 1: Addresses with alternating zero bytes (common in numeric data)
+        let zero_byte_count = addr_bytes.iter().filter(|&&b| b == 0).count();
+        if zero_byte_count > 14 {
+            // More than 14 zero bytes out of 20 is suspicious
+            return false;
+        }
 
-         // Known non-token addresses (ETH placeholder, zero-like addresses)
-         match addr_str.as_str() {
-             "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" => false, // ETH placeholder
-             "0x0000000000000000000000000000000000000000" => false, // Zero address  
-             _ if addr_str.contains("0000000000000000") => false, // Contains too many consecutive zeros
-             _ => true
-         }
-     }
+        // Pattern 2: Check for obvious non-address patterns (all same byte, sequential patterns)
+        let unique_bytes: std::collections::HashSet<u8> = addr_bytes.iter().cloned().collect();
+        if unique_bytes.len() < 3 {
+            // Too few unique bytes suggests numeric data
+            return false;
+        }
+
+        // Pattern 3: Exclude known contract patterns that are not tokens
+        let addr_str = format!("{:#x}", addr).to_lowercase();
+
+        // Exclude common non-token contract patterns
+        if addr_str.ends_with("00000000") && addr_str.len() == 42 {
+            return false; // Likely a numeric value, not an address
+        }
+
+        // Known non-token addresses (ETH placeholder, zero-like addresses)
+        match addr_str.as_str() {
+            "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" => false, // ETH placeholder
+            "0x0000000000000000000000000000000000000000" => false, // Zero address
+            _ if addr_str.contains("0000000000000000") => false, // Contains too many consecutive zeros
+            _ => true,
+        }
+    }
 
     /// Extract token pair from Uniswap V3 exactInputSingle and similar functions
     async fn extract_v3_token_pair(&self, params_data: &[u8]) -> Result<Option<Address>> {
@@ -1261,13 +1398,14 @@ impl MempoolMonitor {
         // V3 exactInputSingle: first two parameters are tokenIn and tokenOut
         let token_in = Address::from_slice(&params_data[12..32]);
         let token_out = Address::from_slice(&params_data[44..64]);
-        
+
         // Validate that these look like token addresses
-         if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
-             self.calculate_pool_address_enhanced(token_in, token_out).await
-         } else {
-             Ok(None)
-         }
+        if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
+            self.calculate_pool_address_enhanced(token_in, token_out)
+                .await
+        } else {
+            Ok(None)
+        }
     }
 
     /// Try extracting tokens from V3 struct-based parameters
@@ -1279,7 +1417,10 @@ impl MempoolMonitor {
 
         // Check if first parameter is a struct offset
         let struct_offset = u32::from_be_bytes([
-            params_data[28], params_data[29], params_data[30], params_data[31]
+            params_data[28],
+            params_data[29],
+            params_data[30],
+            params_data[31],
         ]) as usize;
 
         if struct_offset > 0 && struct_offset < params_data.len().saturating_sub(64) {
@@ -1287,9 +1428,12 @@ impl MempoolMonitor {
             if struct_data.len() >= 64 {
                 let token_in = Address::from_slice(&struct_data[12..32]);
                 let token_out = Address::from_slice(&struct_data[44..64]);
-                
-                 if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out) {
-                     return self.calculate_pool_address_enhanced(token_in, token_out).await;
+
+                if self.is_likely_token_address(token_in) && self.is_likely_token_address(token_out)
+                {
+                    return self
+                        .calculate_pool_address_enhanced(token_in, token_out)
+                        .await;
                 }
             }
         }
@@ -1298,17 +1442,21 @@ impl MempoolMonitor {
     }
 
     /// Calculate Uniswap V2 pool address from token pair
-    async fn calculate_uniswap_v2_pool(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
+    async fn calculate_uniswap_v2_pool(
+        &self,
+        token0: Address,
+        token1: Address,
+    ) -> Result<Option<Address>> {
         // Sort tokens (Uniswap V2 requirement)
-        let (sorted_token0, sorted_token1) = if token0 < token1 { 
-            (token0, token1) 
-        } else { 
-            (token1, token0) 
+        let (sorted_token0, sorted_token1) = if token0 < token1 {
+            (token0, token1)
+        } else {
+            (token1, token0)
         };
 
         // Uniswap V2 Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f
         let factory = Address::from_str("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f")?;
-        
+
         // Calculate CREATE2 address: keccak256(abi.encodePacked(token0, token1, init_code_hash))
         let mut data = Vec::new();
         data.extend_from_slice(sorted_token0.as_slice());
@@ -1317,168 +1465,226 @@ impl MempoolMonitor {
 
         // Uniswap V2 init code hash
         let init_code_hash = [
-            0x96, 0xe8, 0xac, 0x42, 0x77, 0x19, 0x8f, 0xf8, 0xb6, 0xf7, 0x85, 0x47, 0x8a, 0xa9, 0xa3, 0x9f, 
-            0x40, 0x3c, 0xb7, 0x68, 0xdd, 0x02, 0xcb, 0xee, 0x32, 0x6c, 0x3e, 0x7d, 0xa3, 0x48, 0x84, 0x5f
+            0x96, 0xe8, 0xac, 0x42, 0x77, 0x19, 0x8f, 0xf8, 0xb6, 0xf7, 0x85, 0x47, 0x8a, 0xa9,
+            0xa3, 0x9f, 0x40, 0x3c, 0xb7, 0x68, 0xdd, 0x02, 0xcb, 0xee, 0x32, 0x6c, 0x3e, 0x7d,
+            0xa3, 0x48, 0x84, 0x5f,
         ];
-        
+
         // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
         let mut create2_data = Vec::new();
         create2_data.push(0xff);
         create2_data.extend_from_slice(factory.as_slice());
         create2_data.extend_from_slice(salt.as_slice());
         create2_data.extend_from_slice(&init_code_hash);
-        
-         let pool_hash = keccak256(&create2_data);
-         let pool_address = Address::from_slice(&pool_hash[12..]);
-         
-         info!("🔍 Calculated pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
-         Ok(Some(pool_address))
-     }
 
-     /// Enhanced pool calculation with multiple DEX strategies and on-chain verification
-     async fn calculate_pool_address_enhanced(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
-         info!("🚀 Enhanced pool calculation for tokens: {} -> {}", token0, token1);
+        let pool_hash = keccak256(&create2_data);
+        let pool_address = Address::from_slice(&pool_hash[12..]);
 
-         // Strategy 1: Try Uniswap V2 calculation
-         if let Some(v2_pool) = self.calculate_uniswap_v2_pool(token0, token1).await? {
-             let v2_addr = format!("{:#x}", v2_pool);
-             if self.eth_client.verify_pool_exists_onchain(&v2_addr).await.unwrap_or(false) {
-                 info!("✅ Found Uniswap V2 pool: {}", v2_addr);
-                 // Add to database for future lookups
-                 self.add_pool_to_database(v2_pool, "UniswapV2", token0, token1).await?;
-                 return Ok(Some(v2_pool));
-             }
-         }
+        info!(
+            "🔍 Calculated pool: {} -> {} = {}",
+            sorted_token0, sorted_token1, pool_address
+        );
+        Ok(Some(pool_address))
+    }
 
-         // Strategy 2: Try Uniswap V3 with different fee tiers
-         let fee_tiers = [500u32, 3000u32, 10000u32]; // 0.05%, 0.3%, 1.0%
-         for fee in fee_tiers {
-             if let Some(v3_pool) = self.calculate_uniswap_v3_pool(token0, token1, fee).await? {
-                 let v3_addr = format!("{:#x}", v3_pool);
-                 if self.eth_client.verify_pool_exists_onchain(&v3_addr).await.unwrap_or(false) {
-                     info!("✅ Found Uniswap V3 pool ({}bps): {}", fee, v3_addr);
-                     self.add_pool_to_database(v3_pool, "UniswapV3", token0, token1).await?;
-                     return Ok(Some(v3_pool));
-                 }
-             }
-         }
+    /// Enhanced pool calculation with multiple DEX strategies and on-chain verification
+    async fn calculate_pool_address_enhanced(
+        &self,
+        token0: Address,
+        token1: Address,
+    ) -> Result<Option<Address>> {
+        info!(
+            "🚀 Enhanced pool calculation for tokens: {} -> {}",
+            token0, token1
+        );
 
-         // Strategy 3: Try SushiSwap calculation
-         if let Some(sushi_pool) = self.calculate_sushiswap_pool(token0, token1).await? {
-             let sushi_addr = format!("{:#x}", sushi_pool);
-             if self.eth_client.verify_pool_exists_onchain(&sushi_addr).await.unwrap_or(false) {
-                 info!("✅ Found SushiSwap pool: {}", sushi_addr);
-                 self.add_pool_to_database(sushi_pool, "SushiSwap", token0, token1).await?;
-                 return Ok(Some(sushi_pool));
-             }
-         }
+        // Strategy 1: Try Uniswap V2 calculation
+        if let Some(v2_pool) = self.calculate_uniswap_v2_pool(token0, token1).await? {
+            let v2_addr = format!("{:#x}", v2_pool);
+            if self
+                .eth_client
+                .verify_pool_exists_onchain(&v2_addr)
+                .await
+                .unwrap_or(false)
+            {
+                info!("✅ Found Uniswap V2 pool: {}", v2_addr);
+                // Add to database for future lookups
+                self.add_pool_to_database(v2_pool, "UniswapV2", token0, token1)
+                    .await?;
+                return Ok(Some(v2_pool));
+            }
+        }
 
-         info!("❌ No valid pool found for tokens: {} -> {}", token0, token1);
-         Ok(None)
-     }
+        // Strategy 2: Try Uniswap V3 with different fee tiers
+        let fee_tiers = [500u32, 3000u32, 10000u32]; // 0.05%, 0.3%, 1.0%
+        for fee in fee_tiers {
+            if let Some(v3_pool) = self.calculate_uniswap_v3_pool(token0, token1, fee).await? {
+                let v3_addr = format!("{:#x}", v3_pool);
+                if self
+                    .eth_client
+                    .verify_pool_exists_onchain(&v3_addr)
+                    .await
+                    .unwrap_or(false)
+                {
+                    info!("✅ Found Uniswap V3 pool ({}bps): {}", fee, v3_addr);
+                    self.add_pool_to_database(v3_pool, "UniswapV3", token0, token1)
+                        .await?;
+                    return Ok(Some(v3_pool));
+                }
+            }
+        }
 
-     /// Calculate Uniswap V3 pool address with specific fee tier
-     async fn calculate_uniswap_v3_pool(&self, token0: Address, token1: Address, fee: u32) -> Result<Option<Address>> {
-         // Sort tokens (Uniswap V3 requirement)
-         let (sorted_token0, sorted_token1) = if token0 < token1 { 
-             (token0, token1) 
-         } else { 
-             (token1, token0) 
-         };
+        // Strategy 3: Try SushiSwap calculation
+        if let Some(sushi_pool) = self.calculate_sushiswap_pool(token0, token1).await? {
+            let sushi_addr = format!("{:#x}", sushi_pool);
+            if self
+                .eth_client
+                .verify_pool_exists_onchain(&sushi_addr)
+                .await
+                .unwrap_or(false)
+            {
+                info!("✅ Found SushiSwap pool: {}", sushi_addr);
+                self.add_pool_to_database(sushi_pool, "SushiSwap", token0, token1)
+                    .await?;
+                return Ok(Some(sushi_pool));
+            }
+        }
 
-         // Uniswap V3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea31F984
-         let factory = Address::from_str("0x1F98431c8aD98523631AE4a59f267346ea31F984")?;
-         
-         // Calculate CREATE2 address: keccak256(abi.encode(token0, token1, fee))
-         let mut salt_data = Vec::new();
-         salt_data.extend_from_slice(sorted_token0.as_slice());
-         salt_data.extend_from_slice(sorted_token1.as_slice());
-         salt_data.extend_from_slice(&fee.to_be_bytes()[1..4]); // Use 3 bytes for fee
-         let salt = keccak256(&salt_data);
+        info!(
+            "❌ No valid pool found for tokens: {} -> {}",
+            token0, token1
+        );
+        Ok(None)
+    }
 
-         // Uniswap V3 Pool init code hash
-         let init_code_hash = [
-             0xe3, 0x4f, 0x19, 0x9b, 0x19, 0xb2, 0xb4, 0xf4, 0x7f, 0x29, 0xcb, 0x2c, 0x60, 0x7b, 0x34, 0x51, 
-             0x33, 0xd4, 0x08, 0x69, 0x7a, 0x59, 0xd7, 0x3b, 0xc1, 0x2a, 0x73, 0x3c, 0xf7, 0xd7, 0xb3, 0x09
-         ];
-         
-         // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
-         let mut create2_data = Vec::new();
-         create2_data.push(0xff);
-         create2_data.extend_from_slice(factory.as_slice());
-         create2_data.extend_from_slice(salt.as_slice());
-         create2_data.extend_from_slice(&init_code_hash);
-         
-         let pool_hash = keccak256(&create2_data);
-         let pool_address = Address::from_slice(&pool_hash[12..]);
-         
-         info!("🔍 Calculated V3 pool: {} -> {} ({}bps) = {}", sorted_token0, sorted_token1, fee, pool_address);
-         Ok(Some(pool_address))
-     }
+    /// Calculate Uniswap V3 pool address with specific fee tier
+    async fn calculate_uniswap_v3_pool(
+        &self,
+        token0: Address,
+        token1: Address,
+        fee: u32,
+    ) -> Result<Option<Address>> {
+        // Sort tokens (Uniswap V3 requirement)
+        let (sorted_token0, sorted_token1) = if token0 < token1 {
+            (token0, token1)
+        } else {
+            (token1, token0)
+        };
 
-     /// Calculate SushiSwap pool address  
-     async fn calculate_sushiswap_pool(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
-         // Sort tokens (SushiSwap requirement)
-         let (sorted_token0, sorted_token1) = if token0 < token1 { 
-             (token0, token1) 
-         } else { 
-             (token1, token0) 
-         };
+        // Uniswap V3 Factory: 0x1F98431c8aD98523631AE4a59f267346ea31F984
+        let factory = Address::from_str("0x1F98431c8aD98523631AE4a59f267346ea31F984")?;
 
-         // SushiSwap Factory: 0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac
-         let factory = Address::from_str("0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac")?;
-         
-         // Calculate CREATE2 address
-         let mut data = Vec::new();
-         data.extend_from_slice(sorted_token0.as_slice());
-         data.extend_from_slice(sorted_token1.as_slice());
-         let salt = keccak256(&data);
+        // Calculate CREATE2 address: keccak256(abi.encode(token0, token1, fee))
+        let mut salt_data = Vec::new();
+        salt_data.extend_from_slice(sorted_token0.as_slice());
+        salt_data.extend_from_slice(sorted_token1.as_slice());
+        salt_data.extend_from_slice(&fee.to_be_bytes()[1..4]); // Use 3 bytes for fee
+        let salt = keccak256(&salt_data);
 
-         // SushiSwap init code hash (same as Uniswap V2)
-         let init_code_hash = [
-             0x96, 0xe8, 0xac, 0x42, 0x77, 0x19, 0x8f, 0xf8, 0xb6, 0xf7, 0x85, 0x47, 0x8a, 0xa9, 0xa3, 0x9f, 
-             0x40, 0x3c, 0xb7, 0x68, 0xdd, 0x02, 0xcb, 0xee, 0x32, 0x6c, 0x3e, 0x7d, 0xa3, 0x48, 0x84, 0x5f
-         ];
-         
-         // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
-         let mut create2_data = Vec::new();
-         create2_data.push(0xff);
-         create2_data.extend_from_slice(factory.as_slice());
-         create2_data.extend_from_slice(salt.as_slice());
-         create2_data.extend_from_slice(&init_code_hash);
-         
-         let pool_hash = keccak256(&create2_data);
-         let pool_address = Address::from_slice(&pool_hash[12..]);
-         
-         info!("🔍 Calculated SushiSwap pool: {} -> {} = {}", sorted_token0, sorted_token1, pool_address);
-         Ok(Some(pool_address))
-     }
+        // Uniswap V3 Pool init code hash
+        let init_code_hash = [
+            0xe3, 0x4f, 0x19, 0x9b, 0x19, 0xb2, 0xb4, 0xf4, 0x7f, 0x29, 0xcb, 0x2c, 0x60, 0x7b,
+            0x34, 0x51, 0x33, 0xd4, 0x08, 0x69, 0x7a, 0x59, 0xd7, 0x3b, 0xc1, 0x2a, 0x73, 0x3c,
+            0xf7, 0xd7, 0xb3, 0x09,
+        ];
 
-     /// Add newly discovered pool to database for future lookups
-     async fn add_pool_to_database(&self, pool_address: Address, protocol: &str, token0: Address, token1: Address) -> Result<()> {
-         use crate::pool_db::DexPool;
+        // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
+        let mut create2_data = Vec::new();
+        create2_data.push(0xff);
+        create2_data.extend_from_slice(factory.as_slice());
+        create2_data.extend_from_slice(salt.as_slice());
+        create2_data.extend_from_slice(&init_code_hash);
 
-         let pool = DexPool {
-             address: format!("{:#x}", pool_address),
-             protocol: protocol.to_string(),
-             token0: Some(format!("{:#x}", token0)),
-             token1: Some(format!("{:#x}", token1)),
-             chain_id: 1, // Mainnet
-         };
+        let pool_hash = keccak256(&create2_data);
+        let pool_address = Address::from_slice(&pool_hash[12..]);
 
-         if let Err(e) = self.pool_db.insert_pool(&pool) {
-             warn!("Failed to insert pool into database: {} - {}", pool.address, e);
-         } else {
-             info!("💾 Added pool to database: {} ({})", pool.address, protocol);
-         }
+        info!(
+            "🔍 Calculated V3 pool: {} -> {} ({}bps) = {}",
+            sorted_token0, sorted_token1, fee, pool_address
+        );
+        Ok(Some(pool_address))
+    }
 
-         Ok(())
-     }
+    /// Calculate SushiSwap pool address  
+    async fn calculate_sushiswap_pool(
+        &self,
+        token0: Address,
+        token1: Address,
+    ) -> Result<Option<Address>> {
+        // Sort tokens (SushiSwap requirement)
+        let (sorted_token0, sorted_token1) = if token0 < token1 {
+            (token0, token1)
+        } else {
+            (token1, token0)
+        };
+
+        // SushiSwap Factory: 0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac
+        let factory = Address::from_str("0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac")?;
+
+        // Calculate CREATE2 address
+        let mut data = Vec::new();
+        data.extend_from_slice(sorted_token0.as_slice());
+        data.extend_from_slice(sorted_token1.as_slice());
+        let salt = keccak256(&data);
+
+        // SushiSwap init code hash (same as Uniswap V2)
+        let init_code_hash = [
+            0x96, 0xe8, 0xac, 0x42, 0x77, 0x19, 0x8f, 0xf8, 0xb6, 0xf7, 0x85, 0x47, 0x8a, 0xa9,
+            0xa3, 0x9f, 0x40, 0x3c, 0xb7, 0x68, 0xdd, 0x02, 0xcb, 0xee, 0x32, 0x6c, 0x3e, 0x7d,
+            0xa3, 0x48, 0x84, 0x5f,
+        ];
+
+        // CREATE2: keccak256(0xff ++ factory ++ salt ++ init_code_hash)[12:]
+        let mut create2_data = Vec::new();
+        create2_data.push(0xff);
+        create2_data.extend_from_slice(factory.as_slice());
+        create2_data.extend_from_slice(salt.as_slice());
+        create2_data.extend_from_slice(&init_code_hash);
+
+        let pool_hash = keccak256(&create2_data);
+        let pool_address = Address::from_slice(&pool_hash[12..]);
+
+        info!(
+            "🔍 Calculated SushiSwap pool: {} -> {} = {}",
+            sorted_token0, sorted_token1, pool_address
+        );
+        Ok(Some(pool_address))
+    }
+
+    /// Add newly discovered pool to database for future lookups
+    async fn add_pool_to_database(
+        &self,
+        pool_address: Address,
+        protocol: &str,
+        token0: Address,
+        token1: Address,
+    ) -> Result<()> {
+        use crate::pool_db::DexPool;
+
+        let pool = DexPool {
+            address: format!("{:#x}", pool_address),
+            protocol: protocol.to_string(),
+            token0: Some(format!("{:#x}", token0)),
+            token1: Some(format!("{:#x}", token1)),
+            chain_id: 1, // Mainnet
+        };
+
+        if let Err(e) = self.pool_db.insert_pool(&pool) {
+            warn!(
+                "Failed to insert pool into database: {} - {}",
+                pool.address, e
+            );
+        } else {
+            info!("💾 Added pool to database: {} ({})", pool.address, protocol);
+        }
+
+        Ok(())
+    }
 
     /// Check if address is a major DEX router (fallback for database lookup)
     fn is_major_dex_router(&self, address: &Address) -> bool {
         let addr_str = format!("{:#x}", address).to_lowercase();
-        
+
         // Most common DEX routers on mainnet
         match addr_str.as_str() {
             "0x7a250d5630b4cf539739df2c5dacb4c659f2488d" | // Uniswap V2 Router
@@ -1496,19 +1702,25 @@ impl MempoolMonitor {
 
     /// Parse Uniswap V3 exactInputSingle function
     /// Function signature: exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))
-    async fn parse_uniswap_v3_exact_input_single(&self, params_data: &[u8]) -> Result<Option<Address>> {
+    async fn parse_uniswap_v3_exact_input_single(
+        &self,
+        params_data: &[u8],
+    ) -> Result<Option<Address>> {
         info!("🔧 === PARSING UNISWAP V3 EXACT INPUT SINGLE ===");
         info!("📊 Input data length: {} bytes", params_data.len());
-        
+
         if params_data.len() < 256 {
-            info!("🔍 Insufficient data for V3 exactInputSingle: {} bytes (minimum: 256)", params_data.len());
+            info!(
+                "🔍 Insufficient data for V3 exactInputSingle: {} bytes (minimum: 256)",
+                params_data.len()
+            );
             return Ok(None);
         }
 
         // Parameters are packed in a struct at offset 0
         // tokenIn (address): bytes 12-31 (first 32 bytes, skip padding)
         // tokenOut (address): bytes 44-63 (second 32 bytes, skip padding)
-        
+
         let token_in_bytes = &params_data[12..32];
         let token_out_bytes = &params_data[44..64];
 
@@ -1519,14 +1731,29 @@ impl MempoolMonitor {
         // amountIn is typically at bytes 128-159 (5th parameter in struct)
         let amount_in = if params_data.len() >= 160 {
             u64::from_be_bytes([
-                params_data[152], params_data[153], params_data[154], params_data[155],
-                params_data[156], params_data[157], params_data[158], params_data[159],
+                params_data[152],
+                params_data[153],
+                params_data[154],
+                params_data[155],
+                params_data[156],
+                params_data[157],
+                params_data[158],
+                params_data[159],
             ])
-        } else { 0 };
+        } else {
+            0
+        };
 
         info!("🔍 V3 exactInputSingle extracted amounts:");
-        info!("   - Amount In: {} wei ({} ETH)", amount_in, amount_in as f64 / 1e18);
-        info!("🔍 V3 exactInputSingle extracted tokens: {} -> {}", token_in, token_out);
+        info!(
+            "   - Amount In: {} wei ({} ETH)",
+            amount_in,
+            amount_in as f64 / 1e18
+        );
+        info!(
+            "🔍 V3 exactInputSingle extracted tokens: {} -> {}",
+            token_in, token_out
+        );
 
         self.find_pool_for_token_pair(token_in, token_out).await
     }
@@ -1536,19 +1763,25 @@ impl MempoolMonitor {
     async fn parse_uniswap_v3_exact_input(&self, params_data: &[u8]) -> Result<Option<Address>> {
         info!("🔧 === PARSING UNISWAP V3 EXACT INPUT (MULTI-HOP) ===");
         info!("📊 Input data length: {} bytes", params_data.len());
-        
+
         if params_data.len() < 160 {
-            info!("🔍 Insufficient data for V3 exactInput: {} bytes (minimum: 160)", params_data.len());
+            info!(
+                "🔍 Insufficient data for V3 exactInput: {} bytes (minimum: 160)",
+                params_data.len()
+            );
             return Ok(None);
         }
 
         // The path is encoded in the first parameter (bytes)
         // For now, extract the first and last tokens from the path
         // This is a simplified implementation - V3 paths are more complex
-        
+
         // Path offset is at bytes 0-31 (first parameter)
         let path_offset = u32::from_be_bytes([
-            params_data[28], params_data[29], params_data[30], params_data[31]
+            params_data[28],
+            params_data[29],
+            params_data[30],
+            params_data[31],
         ]) as usize;
 
         info!("🔍 V3 path offset: {} bytes", path_offset);
@@ -1560,13 +1793,16 @@ impl MempoolMonitor {
 
         // Path length
         let path_length = u32::from_be_bytes([
-            params_data[path_offset + 28], params_data[path_offset + 29], 
-            params_data[path_offset + 30], params_data[path_offset + 31]
+            params_data[path_offset + 28],
+            params_data[path_offset + 29],
+            params_data[path_offset + 30],
+            params_data[path_offset + 31],
         ]) as usize;
 
         info!("🔍 V3 path length: {} bytes", path_length);
 
-        if path_length < 43 { // Minimum: 20 (token) + 3 (fee) + 20 (token)
+        if path_length < 43 {
+            // Minimum: 20 (token) + 3 (fee) + 20 (token)
             info!("🔍 V3 path too short: {} bytes", path_length);
             return Ok(None);
         }
@@ -1585,13 +1821,19 @@ impl MempoolMonitor {
         let token_in = Address::from_slice(token_in_bytes);
         let token_out = Address::from_slice(token_out_bytes);
 
-        info!("🔍 V3 exactInput extracted tokens: {} -> {}", token_in, token_out);
+        info!(
+            "🔍 V3 exactInput extracted tokens: {} -> {}",
+            token_in, token_out
+        );
 
         self.find_pool_for_token_pair(token_in, token_out).await
     }
 
     /// Parse Uniswap V3 exactOutputSingle function
-    async fn parse_uniswap_v3_exact_output_single(&self, params_data: &[u8]) -> Result<Option<Address>> {
+    async fn parse_uniswap_v3_exact_output_single(
+        &self,
+        params_data: &[u8],
+    ) -> Result<Option<Address>> {
         info!("🔧 === PARSING UNISWAP V3 EXACT OUTPUT SINGLE ===");
         // Similar structure to exactInputSingle
         self.parse_uniswap_v3_exact_input_single(params_data).await
@@ -1601,17 +1843,23 @@ impl MempoolMonitor {
     async fn parse_uniswap_v3_multicall(&self, params_data: &[u8]) -> Result<Option<Address>> {
         info!("🔧 === PARSING UNISWAP V3 MULTICALL ===");
         info!("📊 Input data length: {} bytes", params_data.len());
-        
+
         // Multicall is complex - it contains multiple function calls
         // For now, just try to extract the first function call
         if params_data.len() < 64 {
-            info!("🔍 Insufficient data for V3 multicall: {} bytes", params_data.len());
+            info!(
+                "🔍 Insufficient data for V3 multicall: {} bytes",
+                params_data.len()
+            );
             return Ok(None);
         }
 
         // Array offset is at bytes 0-31
         let array_offset = u32::from_be_bytes([
-            params_data[28], params_data[29], params_data[30], params_data[31]
+            params_data[28],
+            params_data[29],
+            params_data[30],
+            params_data[31],
         ]) as usize;
 
         info!("🔍 V3 multicall array offset: {} bytes", array_offset);
@@ -1623,8 +1871,10 @@ impl MempoolMonitor {
 
         // Array length
         let array_length = u32::from_be_bytes([
-            params_data[array_offset + 28], params_data[array_offset + 29],
-            params_data[array_offset + 30], params_data[array_offset + 31]
+            params_data[array_offset + 28],
+            params_data[array_offset + 29],
+            params_data[array_offset + 30],
+            params_data[array_offset + 31],
         ]) as usize;
 
         info!("🔍 V3 multicall array length: {} calls", array_length);
@@ -1641,12 +1891,18 @@ impl MempoolMonitor {
             return Ok(None);
         }
 
-        let first_call_offset = array_offset + u32::from_be_bytes([
-            params_data[first_call_offset_pos + 28], params_data[first_call_offset_pos + 29],
-            params_data[first_call_offset_pos + 30], params_data[first_call_offset_pos + 31]
-        ]) as usize;
+        let first_call_offset = array_offset
+            + u32::from_be_bytes([
+                params_data[first_call_offset_pos + 28],
+                params_data[first_call_offset_pos + 29],
+                params_data[first_call_offset_pos + 30],
+                params_data[first_call_offset_pos + 31],
+            ]) as usize;
 
-        info!("🔍 V3 multicall first call offset: {} bytes", first_call_offset);
+        info!(
+            "🔍 V3 multicall first call offset: {} bytes",
+            first_call_offset
+        );
 
         if first_call_offset >= params_data.len() || first_call_offset + 36 > params_data.len() {
             info!("🔍 V3 multicall first call data out of bounds");
@@ -1655,11 +1911,16 @@ impl MempoolMonitor {
 
         // Get first call data length
         let first_call_length = u32::from_be_bytes([
-            params_data[first_call_offset + 28], params_data[first_call_offset + 29],
-            params_data[first_call_offset + 30], params_data[first_call_offset + 31]
+            params_data[first_call_offset + 28],
+            params_data[first_call_offset + 29],
+            params_data[first_call_offset + 30],
+            params_data[first_call_offset + 31],
         ]) as usize;
 
-        info!("🔍 V3 multicall first call length: {} bytes", first_call_length);
+        info!(
+            "🔍 V3 multicall first call length: {} bytes",
+            first_call_length
+        );
 
         if first_call_length < 4 || first_call_offset + 32 + first_call_length > params_data.len() {
             info!("🔍 V3 multicall first call invalid");
@@ -1667,30 +1928,39 @@ impl MempoolMonitor {
         }
 
         // Extract and analyze the first function call
-        let first_call_data = &params_data[first_call_offset + 32..first_call_offset + 32 + first_call_length];
-        
+        let first_call_data =
+            &params_data[first_call_offset + 32..first_call_offset + 32 + first_call_length];
+
         if first_call_data.len() < 4 {
             info!("🔍 V3 multicall first call too short");
             return Ok(None);
         }
-        
+
         let inner_selector = &first_call_data[0..4];
-        info!("🔍 V3 multicall first call selector: 0x{}", hex::encode(inner_selector));
+        info!(
+            "🔍 V3 multicall first call selector: 0x{}",
+            hex::encode(inner_selector)
+        );
 
         // Handle common inner functions directly instead of recursing
         match inner_selector {
             // exactInputSingle
             [0x41, 0x4b, 0xf3, 0x89] => {
                 info!("🔍 V3 multicall contains exactInputSingle");
-                self.parse_uniswap_v3_exact_input_single(&first_call_data[4..]).await
+                self.parse_uniswap_v3_exact_input_single(&first_call_data[4..])
+                    .await
             }
             // exactInput
             [0xb8, 0x58, 0x18, 0x3f] => {
                 info!("🔍 V3 multicall contains exactInput");
-                self.parse_uniswap_v3_exact_input(&first_call_data[4..]).await
+                self.parse_uniswap_v3_exact_input(&first_call_data[4..])
+                    .await
             }
             _ => {
-                info!("🔍 V3 multicall contains unknown function: 0x{}", hex::encode(inner_selector));
+                info!(
+                    "🔍 V3 multicall contains unknown function: 0x{}",
+                    hex::encode(inner_selector)
+                );
                 Ok(None)
             }
         }
@@ -1719,11 +1989,17 @@ impl MempoolMonitor {
         }
 
         // If no pool found in static database, try dynamic discovery
-        info!("🔍 No pool found in database, attempting dynamic discovery for {} <-> {}", token0, token1);
-        
+        info!(
+            "🔍 No pool found in database, attempting dynamic discovery for {} <-> {}",
+            token0, token1
+        );
+
         if let Some(discovered_pool) = self.discover_pool_dynamically(token0, token1).await? {
-            info!("✨ Dynamic discovery found pool: {} (UniswapV2)", discovered_pool);
-            
+            info!(
+                "✨ Dynamic discovery found pool: {} (UniswapV2)",
+                discovered_pool
+            );
+
             // Add to database for future lookups
             let new_pool = crate::pool_db::DexPool {
                 address: format!("{:#x}", discovered_pool),
@@ -1732,13 +2008,13 @@ impl MempoolMonitor {
                 token1: Some(format!("{:#x}", token1)),
                 chain_id: 1,
             };
-            
-             if let Err(e) = self.pool_db.insert_pool(&new_pool) {
+
+            if let Err(e) = self.pool_db.insert_pool(&new_pool) {
                 debug!("⚠️ Failed to add discovered pool to database: {}", e);
             } else {
                 info!("💾 Added discovered pool to database");
             }
-            
+
             return Ok(Some(discovered_pool));
         }
 
@@ -1750,42 +2026,52 @@ impl MempoolMonitor {
     }
 
     /// Discover pool dynamically using CREATE2 address calculation
-    async fn discover_pool_dynamically(&self, token0: Address, token1: Address) -> Result<Option<Address>> {
+    async fn discover_pool_dynamically(
+        &self,
+        token0: Address,
+        token1: Address,
+    ) -> Result<Option<Address>> {
         // Uniswap V2 Factory: 0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f
         // Init code hash: 0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f
-        
+
         let factory = Address::from_str("0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f")?;
         let init_code_hash = "0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee326c3e7da348845f";
-        
+
         // Sort tokens (Uniswap V2 requires token0 < token1)
         let (sorted_token0, sorted_token1) = if token0 < token1 {
             (token0, token1)
         } else {
             (token1, token0)
         };
-        
+
         // Calculate CREATE2 address
         // address = keccak256(0xff + factory + salt + init_code_hash)[12:]
         // salt = keccak256(abi.encodePacked(token0, token1))
-        
+
         // Create salt: keccak256(token0 + token1)
         let mut salt_input = Vec::new();
         salt_input.extend_from_slice(sorted_token0.as_slice());
         salt_input.extend_from_slice(sorted_token1.as_slice());
         let salt = keccak256(&salt_input);
-        
+
         // Create CREATE2 input: 0xff + factory + salt + init_code_hash
         let mut create2_input = Vec::new();
         create2_input.push(0xff);
         create2_input.extend_from_slice(factory.as_slice());
         create2_input.extend_from_slice(salt.as_slice());
-        create2_input.extend_from_slice(&hex::decode(&init_code_hash[2..]).map_err(|e| anyhow::anyhow!("Invalid init code hash: {}", e))?);
-        
+        create2_input.extend_from_slice(
+            &hex::decode(&init_code_hash[2..])
+                .map_err(|e| anyhow::anyhow!("Invalid init code hash: {}", e))?,
+        );
+
         let pool_hash = keccak256(&create2_input);
         let pool_address = Address::from_slice(&pool_hash[12..]);
-        
-        info!("🧮 Calculated pool address for {}/{}: {}", sorted_token0, sorted_token1, pool_address);
-        
+
+        info!(
+            "🧮 Calculated pool address for {}/{}: {}",
+            sorted_token0, sorted_token1, pool_address
+        );
+
         // Verify pool exists by checking if it has code
         match self.eth_client.get_code(pool_address).await {
             Ok(code) => {
@@ -1811,9 +2097,15 @@ impl MempoolMonitor {
         pool_details: &crate::pool_db::DexPool,
     ) -> Result<Option<crate::enhanced_revm_simulator::EnhancedSandwichResult>> {
         use crate::pool_state_fetcher::PoolStateFetcher;
-        
-        let sim_id = format!("basic_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-        
+
+        let sim_id = format!(
+            "basic_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
+
         info!("🧮 === BASIC SANDWICH SIMULATION STARTED ===");
         info!("📊 Simulation ID: {}", sim_id);
         info!("🎯 SIMULATION INPUTS:");
@@ -1835,7 +2127,7 @@ impl MempoolMonitor {
         let pool_state = pool_fetcher
             .fetch_pool_state(pool_address, &pool_details.protocol)
             .await?;
-            
+
         info!("📊 FETCHED POOL STATE:");
         info!("   - Pool Address: {}", pool_state.address);
         info!("   - Token0: {}", pool_state.token0);
@@ -1847,10 +2139,10 @@ impl MempoolMonitor {
         // Basic profitability calculation
         info!("💰 Extracting trade amount from victim transaction...");
         let victim_amount = self.extract_trade_amount(victim_tx)?;
-        
+
         info!("🧮 TRADE AMOUNT CALCULATIONS:");
         info!("   - Victim Amount: {} ETH", victim_amount);
-        
+
         // Binary search for optimal frontrun amount
         let mut low_multiplier = 0.1;
         let mut high_multiplier = 10.0;
@@ -1858,92 +2150,114 @@ impl MempoolMonitor {
         let mut best_profit = 0.0;
         let mut best_frontrun_amount = 0.0;
         let mut iteration = 0;
-        
+
         info!("🔍 === BINARY SEARCH FOR OPTIMAL FRONTRUN AMOUNT ===");
-        
+
         while (high_multiplier - low_multiplier) > precision && iteration < 10 {
             iteration += 1;
-            
+
             // Test three points: low, mid, high
             let mid_multiplier = (low_multiplier + high_multiplier) / 2.0;
             let test_points = vec![
                 (low_multiplier, "low"),
-                (mid_multiplier, "mid"), 
-                (high_multiplier, "high")
+                (mid_multiplier, "mid"),
+                (high_multiplier, "high"),
             ];
-            
+
             let mut profits = Vec::new();
-            
+
             for (multiplier, label) in test_points {
                 let frontrun_amount = victim_amount * multiplier;
-                
-                info!("📊 Iteration {}: Testing {} point: {} ETH ({}x victim)", 
-                     iteration, label, frontrun_amount, multiplier);
-                
+
+                info!(
+                    "📊 Iteration {}: Testing {} point: {} ETH ({}x victim)",
+                    iteration, label, frontrun_amount, multiplier
+                );
+
                 // Simple price impact calculation (basic AMM formula)
                 let price_impact = self.calculate_price_impact(&pool_state, victim_amount)?;
-                
+
                 // Estimate profit based on price impact
                 let estimated_profit = frontrun_amount * price_impact;
-                
+
                 // Calculate dynamic gas cost based on current network conditions
-                let current_gas_price_gwei = match self.eth_client.get_current_gas_price_wei().await {
+                let current_gas_price_gwei = match self.eth_client.get_current_gas_price_wei().await
+                {
                     Ok(gas_price_wei) => gas_price_wei as f64 / 1e9,
                     Err(_) => 30.0, // Fallback to 30 gwei if we can't fetch current price
                 };
-                
+
                 // Estimate gas usage: frontrun (100k) + victim (200k) + backrun (100k) = 400k total
                 let total_gas_units = 400_000.0;
                 let gas_cost = total_gas_units * current_gas_price_gwei * 1e-9; // Convert gwei to ETH
                 let net_profit = estimated_profit - gas_cost;
-                
+
                 info!("   - Price Impact: {:.6}", price_impact);
                 info!("   - Estimated Profit: {} ETH", estimated_profit);
                 info!("   - Current Gas Price: {:.1} gwei", current_gas_price_gwei);
-                info!("   - Gas Cost: {:.6} ETH ({:.0}k gas units)", gas_cost, total_gas_units / 1000.0);
+                info!(
+                    "   - Gas Cost: {:.6} ETH ({:.0}k gas units)",
+                    gas_cost,
+                    total_gas_units / 1000.0
+                );
                 info!("   - Net Profit: {} ETH", net_profit);
-                
+
                 profits.push((multiplier, frontrun_amount, net_profit));
-                
+
                 if net_profit > best_profit {
                     best_profit = net_profit;
                     best_frontrun_amount = frontrun_amount;
                 }
             }
-            
+
             // Determine which direction to search based on profit curve
             let low_profit = profits[0].2;
             let mid_profit = profits[1].2;
             let high_profit = profits[2].2;
-            
+
             if mid_profit >= low_profit && mid_profit >= high_profit {
                 // Peak is around mid, narrow search around it
                 let range = (high_multiplier - low_multiplier) / 4.0;
                 low_multiplier = (mid_multiplier - range).max(0.1);
                 high_multiplier = (mid_multiplier + range).min(10.0);
-                info!("🔍 Peak found at mid, narrowing search: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+                info!(
+                    "🔍 Peak found at mid, narrowing search: [{:.3}, {:.3}]",
+                    low_multiplier, high_multiplier
+                );
             } else if low_profit < mid_profit && mid_profit < high_profit {
                 // Profit increasing, search upper half
                 low_multiplier = mid_multiplier;
-                info!("🔍 Profit increasing, searching upper half: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+                info!(
+                    "🔍 Profit increasing, searching upper half: [{:.3}, {:.3}]",
+                    low_multiplier, high_multiplier
+                );
             } else {
                 // Profit decreasing or peak in lower half, search lower half
                 high_multiplier = mid_multiplier;
-                info!("🔍 Profit decreasing, searching lower half: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+                info!(
+                    "🔍 Profit decreasing, searching lower half: [{:.3}, {:.3}]",
+                    low_multiplier, high_multiplier
+                );
             }
         }
-        
+
         info!("🏆 === BINARY SEARCH COMPLETE ===");
         info!("   - Iterations: {}", iteration);
-        info!("   - Final Range: [{:.3}, {:.3}]", low_multiplier, high_multiplier);
+        info!(
+            "   - Final Range: [{:.3}, {:.3}]",
+            low_multiplier, high_multiplier
+        );
         info!("   - Best Frontrun Amount: {} ETH", best_frontrun_amount);
         info!("   - Best Net Profit: {} ETH", best_profit);
         // Only proceed if profitable
         if best_profit <= 0.0 {
-            info!("❌ No profitable frontrun amount found (best: {} ETH)", best_profit);
+            info!(
+                "❌ No profitable frontrun amount found (best: {} ETH)",
+                best_profit
+            );
             return Ok(None);
         }
-        
+
         // Calculate final gas cost for result
         let final_gas_price_gwei = match self.eth_client.get_current_gas_price_wei().await {
             Ok(gas_price_wei) => gas_price_wei as f64 / 1e9,
@@ -1959,16 +2273,22 @@ impl MempoolMonitor {
             success: true,
             profit_eth: best_profit + final_gas_cost, // Add back gas cost to get gross profit
             profit_usd: (best_profit + final_gas_cost) * 3200.0, // Assume ETH price
-            gas_used: final_total_gas_units as u64,                     // Use calculated gas units
+            gas_used: final_total_gas_units as u64,   // Use calculated gas units
             gas_cost_eth: final_gas_cost,
             net_profit_eth: best_profit,
             net_profit_usd: best_profit * 3200.0,
             price_impact: self.calculate_price_impact(&pool_state, victim_amount)?,
             slippage: self.calculate_price_impact(&pool_state, victim_amount)? * 0.3, // Assume 30% of price impact is slippage
-            risk_score: if self.calculate_price_impact(&pool_state, victim_amount)? > 0.05 { 80 } else { 20 }, // High risk if >5% impact
+            risk_score: if self.calculate_price_impact(&pool_state, victim_amount)? > 0.05 {
+                80
+            } else {
+                20
+            }, // High risk if >5% impact
             execution_time_ms: 150,
             frontrun_amount: U256::from((best_frontrun_amount * 1e18) as u64),
-            backrun_amount: U256::from(((best_frontrun_amount + best_profit + final_gas_cost) * 1e18) as u64),
+            backrun_amount: U256::from(
+                ((best_frontrun_amount + best_profit + final_gas_cost) * 1e18) as u64,
+            ),
             pool_liquidity_before: pool_state.total_liquidity_usd,
             pool_liquidity_after: pool_state.total_liquidity_usd,
             simulation_accuracy: 0.75, // Basic simulation accuracy
@@ -1998,13 +2318,19 @@ impl MempoolMonitor {
         // Use estimated USD value if available
         if victim_tx.estimated_value_usd > 1.0 {
             let eth_equivalent = victim_tx.estimated_value_usd / 3200.0; // Assume $3200 per ETH
-            info!("💰 Using USD estimate: ${} → {} ETH", victim_tx.estimated_value_usd, eth_equivalent);
+            info!(
+                "💰 Using USD estimate: ${} → {} ETH",
+                victim_tx.estimated_value_usd, eth_equivalent
+            );
             return Ok(eth_equivalent);
         }
 
         // Conservative default for unknown swaps
         let default_amount = 0.05; // Reduced from 0.1 to be more conservative
-        info!("⚠️ Using default victim amount: {} ETH (could not parse calldata)", default_amount);
+        info!(
+            "⚠️ Using default victim amount: {} ETH (could not parse calldata)",
+            default_amount
+        );
         Ok(default_amount)
     }
 
@@ -2012,15 +2338,21 @@ impl MempoolMonitor {
     fn parse_swap_amount_from_calldata(&self, victim_tx: &MempoolTransaction) -> Option<f64> {
         let input_data = &victim_tx.input;
         if input_data.len() < 4 {
-            info!("🔍 Calldata parsing failed: insufficient data length {}", input_data.len());
+            info!(
+                "🔍 Calldata parsing failed: insufficient data length {}",
+                input_data.len()
+            );
             return None;
         }
 
         // Get function selector (first 4 bytes)
         let selector = &input_data[0..4];
-        let selector_hex = format!("0x{:02x}{:02x}{:02x}{:02x}", selector[0], selector[1], selector[2], selector[3]);
+        let selector_hex = format!(
+            "0x{:02x}{:02x}{:02x}{:02x}",
+            selector[0], selector[1], selector[2], selector[3]
+        );
         info!("🔍 Parsing calldata for selector: {}", selector_hex);
-        
+
         match selector {
             // swapExactETHForTokens(uint256,address[],address,uint256)
             [0x7f, 0xf3, 0x6a, 0xb5] => {
@@ -2030,8 +2362,11 @@ impl MempoolMonitor {
                     let amount_bytes: [u8; 32] = input_data[4..36].try_into().ok()?;
                     let min_amount_out = U256::from_be_bytes(amount_bytes);
                     let min_out_f64 = min_amount_out.to::<u128>() as f64 / 1e18;
-                    info!("🔍 Minimum amount out: {} (as ETH equivalent estimate)", min_out_f64);
-                    
+                    info!(
+                        "🔍 Minimum amount out: {} (as ETH equivalent estimate)",
+                        min_out_f64
+                    );
+
                     // Use a conservative estimate based on minimum out (assume ~1:1000 ratio for popular tokens)
                     if min_out_f64 > 1.0 {
                         let estimated_eth = min_out_f64 / 1000.0; // Very rough estimate
@@ -2043,7 +2378,7 @@ impl MempoolMonitor {
                     None
                 }
             }
-            
+
             // swapExactTokensForTokens(uint256,uint256,address[],address,uint256)
             [0x38, 0xed, 0x17, 0x39] => {
                 info!("🔍 Detected swapExactTokensForTokens");
@@ -2051,8 +2386,11 @@ impl MempoolMonitor {
                     let amount_bytes: [u8; 32] = input_data[4..36].try_into().ok()?;
                     let amount = U256::from_be_bytes(amount_bytes);
                     let amount_f64 = amount.to::<u128>() as f64 / 1e18;
-                    info!("🔍 Parsed token amount: {} (assuming 18 decimals)", amount_f64);
-                    
+                    info!(
+                        "🔍 Parsed token amount: {} (assuming 18 decimals)",
+                        amount_f64
+                    );
+
                     if amount_f64 > 0.001 && amount_f64 < 1000.0 {
                         Some(amount_f64.min(10.0))
                     } else {
@@ -2064,7 +2402,7 @@ impl MempoolMonitor {
                     None
                 }
             }
-            
+
             // swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
             [0x79, 0x1a, 0xc9, 0x47] => {
                 info!("🔍 Detected swapExactTokensForTokensSupportingFeeOnTransferTokens");
@@ -2072,8 +2410,11 @@ impl MempoolMonitor {
                     let amount_bytes: [u8; 32] = input_data[4..36].try_into().ok()?;
                     let amount = U256::from_be_bytes(amount_bytes);
                     let amount_f64 = amount.to::<u128>() as f64 / 1e18;
-                    info!("🔍 Parsed fee-on-transfer token amount: {} (assuming 18 decimals)", amount_f64);
-                    
+                    info!(
+                        "🔍 Parsed fee-on-transfer token amount: {} (assuming 18 decimals)",
+                        amount_f64
+                    );
+
                     if amount_f64 > 0.001 && amount_f64 < 1000.0 {
                         Some(amount_f64.min(10.0))
                     } else {
@@ -2085,7 +2426,7 @@ impl MempoolMonitor {
                     None
                 }
             }
-            
+
             // swapTokensForExactTokens(uint256,uint256,address[],address,uint256)
             [0x88, 0x03, 0xdb, 0xee] => {
                 info!("🔍 Detected swapTokensForExactTokens");
@@ -2093,8 +2434,11 @@ impl MempoolMonitor {
                     let amount_bytes: [u8; 32] = input_data[36..68].try_into().ok()?;
                     let amount = U256::from_be_bytes(amount_bytes);
                     let amount_f64 = amount.to::<u128>() as f64 / 1e18;
-                    info!("🔍 Parsed max input amount: {} (assuming 18 decimals)", amount_f64);
-                    
+                    info!(
+                        "🔍 Parsed max input amount: {} (assuming 18 decimals)",
+                        amount_f64
+                    );
+
                     if amount_f64 > 0.001 && amount_f64 < 1000.0 {
                         Some(amount_f64.min(10.0))
                     } else {
@@ -2106,16 +2450,25 @@ impl MempoolMonitor {
                     None
                 }
             }
-            
+
             _ => {
-                info!("🔍 Unknown function selector: {} - using gas-based estimation", selector_hex);
+                info!(
+                    "🔍 Unknown function selector: {} - using gas-based estimation",
+                    selector_hex
+                );
                 // Unknown function - try to estimate based on gas usage
                 let gas_limit = victim_tx.gas_limit.to::<u64>() as f64;
                 if gas_limit > 200_000.0 {
-                    info!("🔍 High gas usage ({}) - estimated large swap: 0.1 ETH", gas_limit);
+                    info!(
+                        "🔍 High gas usage ({}) - estimated large swap: 0.1 ETH",
+                        gas_limit
+                    );
                     Some(0.1)
                 } else {
-                    info!("🔍 Low gas usage ({}) - estimated small swap: 0.02 ETH", gas_limit);
+                    info!(
+                        "🔍 Low gas usage ({}) - estimated small swap: 0.02 ETH",
+                        gas_limit
+                    );
                     Some(0.02)
                 }
             }
@@ -2163,23 +2516,24 @@ mod tests {
         let pool_db = std::sync::Arc::new(PoolDatabase::new(":memory:").unwrap());
         let config = MempoolConfig::default();
         let (tx, _rx) = mpsc::unbounded_channel();
-        
+
         // Create mock eth client for testing
         let eth_client = std::sync::Arc::new(
             futures::executor::block_on(async {
                 EthereumClient::new("http://localhost:8545").await
-            }).unwrap()
+            })
+            .unwrap(),
         );
 
-         MempoolMonitor {
-             eth_client,
-             pool_db,
-             config,
-             known_pools: HashSet::new(),
-             opportunity_sender: tx,
-             stats: MonitorStats::default(),
-             processed_transactions: HashMap::new(),
-         }
+        MempoolMonitor {
+            eth_client,
+            pool_db,
+            config,
+            known_pools: HashSet::new(),
+            opportunity_sender: tx,
+            stats: MonitorStats::default(),
+            processed_transactions: HashMap::new(),
+        }
     }
 
     #[test]
@@ -2241,10 +2595,10 @@ mod tests {
         // Create mock ABI-encoded data for a swap with token path
         // This simulates swapExactTokensForTokens with a 2-token path
         let mut test_data = vec![0u8; 200];
-        
+
         // Set up a mock array at offset 64 (skip first two 32-byte parameters)
         let array_offset = 64;
-        
+
         // Array length = 2
         test_data[array_offset + 28] = 0;
         test_data[array_offset + 29] = 0;
@@ -2253,11 +2607,13 @@ mod tests {
 
         // Token 0: WETH (last 20 bytes of 32-byte slot)
         let weth_bytes = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
-        test_data[array_offset + 32 + 12..array_offset + 32 + 32].copy_from_slice(&weth_bytes.as_slice());
+        test_data[array_offset + 32 + 12..array_offset + 32 + 32]
+            .copy_from_slice(&weth_bytes.as_slice());
 
         // Token 1: USDC (last 20 bytes of next 32-byte slot)
         let usdc_bytes = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
-        test_data[array_offset + 64 + 12..array_offset + 64 + 32].copy_from_slice(&usdc_bytes.as_slice());
+        test_data[array_offset + 64 + 12..array_offset + 64 + 32]
+            .copy_from_slice(&usdc_bytes.as_slice());
 
         let result = monitor.extract_token_pair_simple(&test_data).await;
 
@@ -2271,13 +2627,17 @@ mod tests {
 
         // Test with empty data
         let empty_data = Bytes::new();
-        let result = monitor.parse_router_target_pool(&empty_data, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d").await;
+        let result = monitor
+            .parse_router_target_pool(&empty_data, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d")
+            .await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
 
         // Test with too short data
         let short_data = Bytes::from(vec![0x7f, 0xf3]);
-        let result = monitor.parse_router_target_pool(&short_data, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d").await;
+        let result = monitor
+            .parse_router_target_pool(&short_data, "0x7a250d5630b4cf539739df2c5dacb4c659f2488d")
+            .await;
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
     }
@@ -2287,16 +2647,22 @@ mod tests {
         let monitor = create_test_monitor();
 
         // Create a transaction going to Uniswap V2 router
-        let uniswap_v2_router = Address::from_str("0x7a250d5630b4cf539739df2c5dacb4c659f2488d").unwrap();
-        let random_address = Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
+        let uniswap_v2_router =
+            Address::from_str("0x7a250d5630b4cf539739df2c5dacb4c659f2488d").unwrap();
+        let random_address =
+            Address::from_str("0x1234567890123456789012345678901234567890").unwrap();
 
         // Test router detection
         assert!(monitor.is_major_dex_router(&uniswap_v2_router));
         assert!(!monitor.is_major_dex_router(&random_address));
 
         // Test database router detection (should also work)
-        assert!(monitor.pool_db.is_dex_router(&format!("{:#x}", uniswap_v2_router)));
-        assert!(!monitor.pool_db.is_dex_router(&format!("{:#x}", random_address)));
+        assert!(monitor
+            .pool_db
+            .is_dex_router(&format!("{:#x}", uniswap_v2_router)));
+        assert!(!monitor
+            .pool_db
+            .is_dex_router(&format!("{:#x}", random_address)));
     }
 
     #[tokio::test]
@@ -2305,11 +2671,11 @@ mod tests {
 
         // Test Strategy 1: Extract from first parameters
         let mut test_data = vec![0u8; 128];
-        
+
         // WETH as first parameter (32 bytes, address in last 20)
         let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
         test_data[12..32].copy_from_slice(&weth.as_slice());
-        
+
         // USDC as second parameter
         let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
         test_data[44..64].copy_from_slice(&usdc.as_slice());
@@ -2325,19 +2691,19 @@ mod tests {
 
         // Create realistic path array data
         let mut test_data = vec![0u8; 256];
-        
+
         // Array offset at position 2 (0x40 = 64)
         test_data[60..64].copy_from_slice(&64u32.to_be_bytes());
-        
+
         // Array data starts at offset 64
         // Array length = 3 tokens
         test_data[92..96].copy_from_slice(&3u32.to_be_bytes());
-        
+
         // Token path: WETH -> USDC -> DAI
         let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
-        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap(); 
+        let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
         let dai = Address::from_str("0x6B175474E89094C44Da98b954EedeAC495271d0F").unwrap();
-        
+
         test_data[108..128].copy_from_slice(&weth.as_slice());
         test_data[140..160].copy_from_slice(&usdc.as_slice());
         test_data[172..192].copy_from_slice(&dai.as_slice());
@@ -2370,16 +2736,16 @@ mod tests {
 
         // Create V3-style struct data
         let mut test_data = vec![0u8; 192];
-        
+
         // Struct offset pointing to position 32
         test_data[28..32].copy_from_slice(&32u32.to_be_bytes());
-        
+
         // Struct data starts at offset 32
         // tokenIn (WETH)
         let weth = Address::from_str("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2").unwrap();
         test_data[44..64].copy_from_slice(&weth.as_slice());
-        
-        // tokenOut (USDC) 
+
+        // tokenOut (USDC)
         let usdc = Address::from_str("0xA0b86a33E6441B0C7d5EB4E5c3BAFe9A93Bc0FE6").unwrap();
         test_data[76..96].copy_from_slice(&usdc.as_slice());
 
