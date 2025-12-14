@@ -6,6 +6,15 @@ out/
 
 # Log files
 *.log
+*.logs
 mev_*.log
 test_*.log
 websocket_*.log
+contract_creation.logs
+
+# Database files (runtime changes)
+database.sqlite3
+
+# Temporary files
+*.tmp
+*.temp
